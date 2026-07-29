@@ -73,7 +73,15 @@ def main():
     # Not a real AppImage (no appimagetool/desktop integration) — just the plain onefile
     # binary named with a .AppImage suffix so file managers show an executable icon and
     # offer a "run" click, instead of a generic file icon.
-    pyinstaller_name = f"{exe_name}.AppImage" if system == "Linux" else exe_name
+    if system == "Linux":
+        pyinstaller_name = f"{exe_name}.AppImage"
+    elif system == "Darwin":
+        # Windows/Linux builds are already identifiable by their .exe/.AppImage
+        # extension; macOS produces a bare .app with no such hint, so the platform
+        # needs to be spelled out in the name itself.
+        pyinstaller_name = f"{exe_name}-macos"
+    else:
+        pyinstaller_name = exe_name
     print(f"Building a standalone {system} executable for {APP_NAME} v{version}...\n")
 
     cmd = [
@@ -95,15 +103,20 @@ def main():
     if system == "Windows":
         binary = dist_dir / f"{exe_name}.exe"
     elif system == "Darwin":
-        # --windowed always produces a full .app bundle on macOS, even with --onefile.
-        binary = dist_dir / f"{exe_name}.app"
+        # --windowed always produces a full .app bundle on macOS, even with --onefile,
+        # alongside a loose copy of the same executable outside the bundle. Only the
+        # .app is meant to be distributed, so drop the redundant loose binary.
+        binary = dist_dir / f"{pyinstaller_name}.app"
+        loose_binary = dist_dir / pyinstaller_name
+        if loose_binary.is_file():
+            loose_binary.unlink()
     else:
         binary = dist_dir / pyinstaller_name
     print(f"\nDone. Executable: {binary}")
 
     if system == "Darwin":
         print("Note: unsigned apps are blocked by Gatekeeper on first run.")
-        print(f"Right-click {exe_name}.app -> Open, or run: xattr -dr com.apple.quarantine '{binary}'")
+        print(f"Right-click {binary.name} -> Open, or run: xattr -dr com.apple.quarantine '{binary}'")
     elif system == "Windows":
         print("Note: unsigned .exe files may trigger a Windows SmartScreen warning")
         print("('More info' -> 'Run anyway' to bypass it).")

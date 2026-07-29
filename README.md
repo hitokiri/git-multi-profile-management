@@ -75,7 +75,7 @@ Esto genera el ejecutable en `dist/`:
 
 - **Linux**: `dist/GitMultiProfileSSH` (binario ELF, márcalo ejecutable con `chmod +x` si es necesario).
 - **Windows**: `dist/GitMultiProfileSSH.exe` (corriendo `build.py` en una máquina Windows real — funciona igual de bien que en Linux/macOS, es el mismo script Python sin nada específico de Wine).
-- **macOS**: `dist/GitMultiProfileSSH.app` (corriendo `build.py` en una Mac real — no hace falta nada más, el mismo script ya detecta macOS y genera el bundle `.app` correcto; PyInstaller siempre empaqueta así cuando se usa `--windowed`, incluso con `--onefile`).
+- **macOS**: `dist/GitMultiProfileSSH-macos.app` (corriendo `build.py` en una Mac real — no hace falta nada más, el mismo script ya detecta macOS y genera el bundle `.app` correcto; PyInstaller siempre empaqueta así cuando se usa `--windowed`, incluso con `--onefile`).
 
 **Importante:** PyInstaller **no compila de forma cruzada** — el ejecutable generado solo funciona en el mismo sistema operativo donde lo construiste.
 
@@ -110,7 +110,7 @@ PyInstaller enlaza el binario contra la glibc de la máquina donde corre el buil
 
 Notas por sistema:
 
-- **macOS**: al ser una app sin firmar, Gatekeeper bloqueará la primera ejecución. Haz clic derecho sobre el `.app` → "Abrir", o corre `xattr -dr com.apple.quarantine dist/GitMultiProfileSSH.app`.
+- **macOS**: al ser una app sin firmar, Gatekeeper bloqueará la primera ejecución. Haz clic derecho sobre el `.app` → "Abrir", o corre `xattr -dr com.apple.quarantine dist/GitMultiProfileSSH-macos.app`.
 - **Windows**: un `.exe` sin firmar puede activar la advertencia de SmartScreen ("Más información" → "Ejecutar de todas formas").
 - **Linux**: si el archivo no tiene permiso de ejecución, corre `chmod +x dist/GitMultiProfileSSH`.
 

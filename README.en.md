@@ -75,7 +75,7 @@ This produces the executable in `dist/`:
 
 - **Linux**: `dist/GitMultiProfileSSH` (an ELF binary; mark it executable with `chmod +x` if needed).
 - **Windows**: `dist/GitMultiProfileSSH.exe` (running `build.py` on a real Windows machine — it works exactly as well as on Linux/macOS, it's the same Python script with nothing Wine-specific in it).
-- **macOS**: `dist/GitMultiProfileSSH.app` (running `build.py` on a real Mac — nothing else needed, the same script already detects macOS and produces the correct `.app` bundle; PyInstaller always packages this way with `--windowed`, even combined with `--onefile`).
+- **macOS**: `dist/GitMultiProfileSSH-macos.app` (running `build.py` on a real Mac — nothing else needed, the same script already detects macOS and produces the correct `.app` bundle; PyInstaller always packages this way with `--windowed`, even combined with `--onefile`).
 
 **Important:** PyInstaller does **not** cross-compile — the resulting executable only runs on the same operating system you built it on.
 
@@ -110,7 +110,7 @@ PyInstaller links the binary against the glibc of the machine that runs the buil
 
 Per-OS notes:
 
-- **macOS**: being an unsigned app, Gatekeeper will block the first run. Right-click the `.app` → "Open", or run `xattr -dr com.apple.quarantine dist/GitMultiProfileSSH.app`.
+- **macOS**: being an unsigned app, Gatekeeper will block the first run. Right-click the `.app` → "Open", or run `xattr -dr com.apple.quarantine dist/GitMultiProfileSSH-macos.app`.
 - **Windows**: an unsigned `.exe` may trigger a SmartScreen warning ("More info" → "Run anyway" to bypass it).
 - **Linux**: if the file isn't executable, run `chmod +x dist/GitMultiProfileSSH`.
 
