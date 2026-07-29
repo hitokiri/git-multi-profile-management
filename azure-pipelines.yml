@@ -1,0 +1,77 @@
+# Builds standalone executables on native Microsoft-hosted Linux, Windows and macOS
+# agents — same idea as .github/workflows/build.yml, for teams using Azure DevOps instead
+# of (or alongside) GitHub. Each OS builds itself; no Wine/cross-compilation involved.
+
+trigger:
+  tags:
+    include:
+      - v*
+
+pr: none
+
+jobs:
+  - job: Linux
+    pool:
+      # Pinned to ubuntu-22.04 (glibc 2.35) rather than ubuntu-latest so the bundled
+      # libpython (and PyInstaller's bootloader) stay runnable on older glibc systems;
+      # a binary built on a newer glibc refuses to run on an older one.
+      vmImage: "ubuntu-22.04"
+    steps:
+      - task: UsePythonVersion@0
+        inputs:
+          versionSpec: "3.11"
+
+      # Ubuntu's hosted Python doesn't always ship tkinter; Windows/macOS bundle it already.
+      - script: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+        displayName: "Install Tk"
+
+      - script: pip install -r requirements-dev.txt
+        displayName: "Install dependencies"
+
+      - script: python build.py
+        displayName: "Build executable"
+
+      - task: PublishPipelineArtifact@1
+        inputs:
+          targetPath: "dist"
+          artifact: "GitMultiProfileSSH-linux"
+
+  - job: Windows
+    pool:
+      vmImage: "windows-latest"
+    steps:
+      - task: UsePythonVersion@0
+        inputs:
+          versionSpec: "3.11"
+
+      - script: pip install -r requirements-dev.txt
+        displayName: "Install dependencies"
+
+      - script: python build.py
+        displayName: "Build executable"
+
+      - task: PublishPipelineArtifact@1
+        inputs:
+          targetPath: "dist"
+          artifact: "GitMultiProfileSSH-windows"
+
+  - job: macOS
+    pool:
+      vmImage: "macOS-latest"
+    steps:
+      - task: UsePythonVersion@0
+        inputs:
+          versionSpec: "3.11"
+
+      - script: pip install -r requirements-dev.txt
+        displayName: "Install dependencies"
+
+      - script: python build.py
+        displayName: "Build executable"
+
+      - task: PublishPipelineArtifact@1
+        inputs:
+          targetPath: "dist"
+          artifact: "GitMultiProfileSSH-macos"

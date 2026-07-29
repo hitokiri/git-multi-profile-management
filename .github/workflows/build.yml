@@ -1,0 +1,74 @@
+name: Build standalone executables
+
+# Runs build.py natively on real Linux/Windows/macOS runners — this is what solves the
+# "can't build a macOS app from Linux" problem: each OS builds its own executable itself,
+# no Wine or cross-compilation involved.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pinned to ubuntu-22.04 (glibc 2.35) rather than ubuntu-latest so the bundled
+        # libpython (and PyInstaller's bootloader) stay runnable on older glibc systems;
+        # a binary built on a newer glibc refuses to run on an older one.
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Ubuntu's setup-python builds don't always ship tkinter; every other OS bundles it.
+      - name: Install Tk (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Build executable
+        run: python build.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitMultiProfileSSH-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts into release/
+        run: |
+          mkdir -p release
+          find artifacts -type f -not -path "*.app/*" -exec cp {} release/ \;
+          # macOS .app bundles are directories; zip them so they survive as a single asset.
+          for app in artifacts/*/*.app; do
+            [ -d "$app" ] || continue
+            (cd "$(dirname "$app")" && zip -r "$OLDPWD/release/$(basename "$app").zip" "$(basename "$app")")
+          done
+          ls -la release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
