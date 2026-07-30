@@ -13,6 +13,8 @@ La interfaz está disponible en **español e inglés**, cambiables en cualquier 
 1. [¿Qué problema resuelve?](#qué-problema-resuelve)
 2. [Requisitos](#requisitos)
 3. [Instalación y ejecución](#instalación-y-ejecución)
+   - [Descargar el ejecutable ya compilado](#opción-recomendada-descargar-el-ejecutable-ya-compilado)
+   - [Ejecutar desde el código fuente (desarrollo)](#ejecutar-desde-el-código-fuente-desarrollo)
 4. [Generar un ejecutable standalone](#generar-un-ejecutable-standalone)
    - [Compilar el `.exe` de Windows desde Linux](#compilar-el-exe-de-windows-desde-linux-sin-tener-windows)
    - [Construir los tres con GitHub Actions](#construir-los-tres-ejecutables-automáticamente-con-github-actions)
@@ -48,6 +50,22 @@ Esta app automatiza todo ese proceso con una interfaz gráfica: crea la carpeta 
 
 ## Instalación y ejecución
 
+Hay dos formas de obtener la app, según lo que quieras hacer:
+
+### Opción recomendada: descargar el ejecutable ya compilado
+
+Si solo quieres **usar la app**, no necesitas instalar Python ni el código fuente: entra a la pestaña [**Releases**](../../releases) del repositorio y descarga el archivo de tu sistema operativo:
+
+- **Windows**: `GitMultiProfileSSH.exe` — doble click para abrir.
+- **macOS**: `GitMultiProfileSSH-macos.app.zip` — descomprime y abre el `.app` (la primera vez puede que Gatekeeper la bloquee, ver [notas por sistema](#compilar-un-binario-linux-compatible-con-distros-más-viejas-glibc) más abajo).
+- **Linux**: `GitMultiProfileSSH` — dale permiso de ejecución (`chmod +x GitMultiProfileSSH`) y ábrelo.
+
+Estos ejecutables se generan automáticamente con cada release (ver [Construir los tres ejecutables automáticamente con GitHub Actions](#construir-los-tres-ejecutables-automáticamente-con-github-actions)); no hace falta compilarlos vos mismo.
+
+### Ejecutar desde el código fuente (desarrollo)
+
+Este flujo es para **desarrollo** o para contribuir al proyecto — requiere tener Python instalado:
+
 ```bash
 # (opcional pero recomendado) crear un entorno virtual
 python3 -m venv venv
@@ -63,6 +81,8 @@ python3 git_complete_automator.py
 No requiere ninguna configuración adicional ni permisos especiales — solo lee y escribe en tu carpeta personal (`~/.gitconfig`, `~/.ssh/config`, etc.).
 
 ## Generar un ejecutable standalone
+
+> Esta sección es para quienes quieren generar sus propios builds (por ejemplo, para publicar una nueva versión o probar cambios locales). Si solo querés **usar** la app, descargá el ejecutable ya compilado desde [Releases](../../releases) — ver la sección anterior.
 
 Si prefieres distribuir la app como un ejecutable de doble clic (sin que quien la use necesite instalar Python), se puede empaquetar con [PyInstaller](https://pyinstaller.org/) usando el script `build.py` incluido:
 

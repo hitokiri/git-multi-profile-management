@@ -13,6 +13,8 @@ The interface is available in **Spanish and English**, switchable at any time fr
 1. [What problem does it solve?](#what-problem-does-it-solve)
 2. [Requirements](#requirements)
 3. [Installation and running](#installation-and-running)
+   - [Download the pre-built executable](#recommended-download-the-pre-built-executable)
+   - [Running from source (development)](#running-from-source-development)
 4. [Building a standalone executable](#building-a-standalone-executable)
    - [Building the Windows `.exe` from Linux](#building-the-windows-exe-from-linux-without-windows)
    - [Building all three with GitHub Actions](#automatically-building-all-three-executables-with-github-actions)
@@ -48,6 +50,22 @@ This app automates that whole process through a graphical interface: it creates 
 
 ## Installation and running
 
+There are two ways to get the app, depending on what you want to do:
+
+### Recommended: download the pre-built executable
+
+If you just want to **use the app**, you don't need to install Python or the source code: go to the repository's [**Releases**](../../releases) tab and download the file for your OS:
+
+- **Windows**: `GitMultiProfileSSH.exe` — double-click to open.
+- **macOS**: `GitMultiProfileSSH-macos.app.zip` — unzip and open the `.app` (Gatekeeper may block it the first time, see [per-OS notes](#building-a-linux-binary-compatible-with-older-distros-glibc) below).
+- **Linux**: `GitMultiProfileSSH` — make it executable (`chmod +x GitMultiProfileSSH`) and open it.
+
+These executables are built automatically on every release (see [Automatically building all three executables with GitHub Actions](#automatically-building-all-three-executables-with-github-actions)) — you don't need to build them yourself.
+
+### Running from source (development)
+
+This flow is for **development** or contributing to the project — it requires Python installed:
+
 ```bash
 # (optional but recommended) create a virtual environment
 python3 -m venv venv
@@ -63,6 +81,8 @@ python3 git_complete_automator.py
 No extra configuration or special permissions required — it only reads/writes inside your home folder (`~/.gitconfig`, `~/.ssh/config`, etc.).
 
 ## Building a standalone executable
+
+> This section is for people who want to build their own executables (e.g. to publish a new release or test local changes). If you just want to **use** the app, download the pre-built executable from [Releases](../../releases) instead — see the previous section.
 
 If you'd rather distribute the app as a double-clickable executable (so whoever uses it doesn't need to install Python), it can be packaged with [PyInstaller](https://pyinstaller.org/) using the included `build.py` script:
 
