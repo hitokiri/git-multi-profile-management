@@ -9,6 +9,7 @@ from tkinter import messagebox, filedialog, simpledialog
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
+THEME_FILE = os.path.expanduser("~/.git_multiprofile_theme")
 LANG_FILE = os.path.expanduser("~/.git_multiprofile_lang")
 GITHUB_COM = "github.com"
 
@@ -33,12 +34,14 @@ I18N = {
 
         # Section 1 - folder
         "section1_title": "1. Carpeta del Proyecto (será la carpeta final, no una base)",
+        "section1_help": "Elige o crea la carpeta donde vivirán los repositorios de este perfil. Git detectará automáticamente todo lo que esté dentro y usará la configuración de este perfil.",
         "path_placeholder": "Elige o crea la carpeta final del proyecto",
         "browse_btn": "Examinar...",
         "new_folder_btn": "➕ Nueva",
 
         # Section 2 - profile data
         "section2_title": "2. Datos del Perfil (Git & SSH)",
+        "section2_help": "Configura los datos que Git usará para los commits y la llave SSH para autenticación.",
         "profile_id_label": "ID de Perfil (= nombre de la organización):",
         "profile_id_placeholder": "nombre-organizacion",
         "profile_id_help": (
@@ -58,6 +61,7 @@ I18N = {
         "real_host_placeholder": GITHUB_COM,
         "self_hosted_placeholder": "tu-dominio-self-hosted.com",
         "gen_ssh_checkbox": "Generar nueva llave SSH automáticamente",
+        "ssh_key_type_help_es": "💡 Ed25519: moderno y seguro (recomendado) • RSA: compatible en sistemas antiguos • ECDSA: alternativa intermedia",
         "run_btn": "🔥 CONFIGURAR TODO AHORA",
 
         # Create confirmation dialog
@@ -280,12 +284,14 @@ I18N = {
 
         # Section 1 - folder
         "section1_title": "1. Project Folder (this will be the final folder, not a base)",
+        "section1_help": "Choose or create the folder where repositories for this profile will live. Git will automatically detect everything inside and use this profile's configuration.",
         "path_placeholder": "Choose or create the final project folder",
         "browse_btn": "Browse...",
         "new_folder_btn": "➕ New",
 
         # Section 2 - profile data
         "section2_title": "2. Profile Data (Git & SSH)",
+        "section2_help": "Configure the data that Git will use for commits and the SSH key for authentication.",
         "profile_id_label": "Profile ID (= organization name):",
         "profile_id_placeholder": "organization-name",
         "profile_id_help": (
@@ -305,6 +311,7 @@ I18N = {
         "real_host_placeholder": GITHUB_COM,
         "self_hosted_placeholder": "your-self-hosted-domain.com",
         "gen_ssh_checkbox": "Automatically generate a new SSH key",
+        "ssh_key_type_help_en": "💡 Ed25519: modern and secure (recommended) • RSA: compatible with older systems • ECDSA: intermediate alternative",
         "run_btn": "🔥 SET UP EVERYTHING NOW",
 
         # Create confirmation dialog
@@ -530,7 +537,7 @@ class GitSSHAutomationApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.geometry("680x730")
+        self.geometry("720x850")
         self.resizable(False, False)
 
         # Paths
@@ -591,6 +598,15 @@ class GitSSHAutomationApp(ctk.CTk):
             self.BITBUCKET: "bitbucket.org",
             self.AZURE_DEVOPS: "ssh.dev.azure.com",
             other: "",
+        }
+
+        # Recommended SSH key type for each provider
+        self.PROVIDER_KEY_TYPES = {
+            self.GITHUB: "ed25519",
+            self.GITLAB: "ed25519",
+            self.BITBUCKET: "ed25519",
+            self.AZURE_DEVOPS: "rsa",
+            other: "ed25519",
         }
 
         # Clone URL shape differs by provider (Azure DevOps uses v3/Org/Project/Repo, not user/repo.git)
@@ -744,16 +760,23 @@ class GitSSHAutomationApp(ctk.CTk):
         sect1_lbl = ctk.CTkLabel(container, text=self.tr("section1_title"), font=ctk.CTkFont(size=14, weight="bold"))
         sect1_lbl.grid(row=0, column=0, columnspan=3, sticky="w", padx=15, pady=(10, 5))
 
+        sect1_help = ctk.CTkLabel(
+            container,
+            text=self.tr("section1_help"),
+            text_color="gray", justify="left", anchor="w", wraplength=480, font=ctk.CTkFont(size=10)
+        )
+        sect1_help.grid(row=1, column=0, columnspan=3, sticky="w", padx=15, pady=(0, 10))
+
         self.path_entry = ctk.CTkEntry(
             container,
             textvariable=self.selected_base_path,
             placeholder_text=self.tr("path_placeholder"),
             width=330,
         )
-        self.path_entry.grid(row=1, column=0, columnspan=2, padx=(15, 10), pady=5, sticky="w")
+        self.path_entry.grid(row=2, column=0, columnspan=2, padx=(15, 10), pady=5, sticky="w")
 
         path_buttons = ctk.CTkFrame(container, fg_color="transparent")
-        path_buttons.grid(row=1, column=2, padx=(0, 15), pady=5, sticky="w")
+        path_buttons.grid(row=2, column=2, padx=(0, 15), pady=5, sticky="w")
 
         browse_btn = ctk.CTkButton(path_buttons, text=self.tr("browse_btn"), width=95, command=self.browse_folder)
         browse_btn.pack(side="left", padx=(0, 5))
@@ -763,13 +786,20 @@ class GitSSHAutomationApp(ctk.CTk):
 
         # SECTION 2: Profile Info
         sect2_lbl = ctk.CTkLabel(container, text=self.tr("section2_title"), font=ctk.CTkFont(size=14, weight="bold"))
-        sect2_lbl.grid(row=2, column=0, columnspan=3, sticky="w", padx=15, pady=(15, 5))
+        sect2_lbl.grid(row=3, column=0, columnspan=3, sticky="w", padx=15, pady=(15, 5))
+
+        sect2_help = ctk.CTkLabel(
+            container,
+            text=self.tr("section2_help"),
+            text_color="gray", justify="left", anchor="w", wraplength=480, font=ctk.CTkFont(size=10)
+        )
+        sect2_help.grid(row=4, column=0, columnspan=3, sticky="w", padx=15, pady=(0, 10))
 
         # Profile ID
         p_id_lbl = ctk.CTkLabel(container, text=self.tr("profile_id_label"))
-        p_id_lbl.grid(row=3, column=0, sticky="w", padx=15, pady=5)
+        p_id_lbl.grid(row=5, column=0, sticky="w", padx=15, pady=5)
         self.profile_id_entry = ctk.CTkEntry(container, placeholder_text=self.tr("profile_id_placeholder"), width=250)
-        self.profile_id_entry.grid(row=3, column=1, columnspan=2, sticky="w", padx=15, pady=5)
+        self.profile_id_entry.grid(row=5, column=1, columnspan=2, sticky="w", padx=15, pady=5)
         self.profile_id_entry.bind(self.KEY_RELEASE_EVENT, self.update_ssh_host_suggestion)
 
         p_id_help_lbl = ctk.CTkLabel(
@@ -777,29 +807,29 @@ class GitSSHAutomationApp(ctk.CTk):
             text=self.tr("profile_id_help"),
             text_color="gray", justify="left", anchor="w", wraplength=480, font=ctk.CTkFont(size=11),
         )
-        p_id_help_lbl.grid(row=4, column=0, columnspan=3, sticky="w", padx=15, pady=(0, 5))
+        p_id_help_lbl.grid(row=6, column=0, columnspan=3, sticky="w", padx=15, pady=(0, 5))
 
         # Git Name
         p_name_lbl = ctk.CTkLabel(container, text=self.tr("git_name_label"))
-        p_name_lbl.grid(row=5, column=0, sticky="w", padx=15, pady=5)
+        p_name_lbl.grid(row=7, column=0, sticky="w", padx=15, pady=5)
         self.git_name_entry = ctk.CTkEntry(container, placeholder_text=self.tr("git_name_placeholder"), width=250)
-        self.git_name_entry.grid(row=5, column=1, columnspan=2, sticky="w", padx=15, pady=5)
+        self.git_name_entry.grid(row=7, column=1, columnspan=2, sticky="w", padx=15, pady=5)
 
         # Git Email
         p_email_lbl = ctk.CTkLabel(container, text=self.tr("git_email_label"))
-        p_email_lbl.grid(row=6, column=0, sticky="w", padx=15, pady=5)
+        p_email_lbl.grid(row=8, column=0, sticky="w", padx=15, pady=5)
         self.git_email_entry = ctk.CTkEntry(container, placeholder_text=self.tr("git_email_placeholder"), width=250)
-        self.git_email_entry.grid(row=6, column=1, columnspan=2, sticky="w", padx=15, pady=5)
+        self.git_email_entry.grid(row=8, column=1, columnspan=2, sticky="w", padx=15, pady=5)
 
         # Host SSH (custom mapping)
         ssh_host_lbl = ctk.CTkLabel(container, text=self.tr("ssh_host_label"))
-        ssh_host_lbl.grid(row=7, column=0, sticky="w", padx=15, pady=5)
+        ssh_host_lbl.grid(row=9, column=0, sticky="w", padx=15, pady=5)
         self.ssh_host_entry = ctk.CTkEntry(container, placeholder_text=self.tr("ssh_host_placeholder"), width=250)
-        self.ssh_host_entry.grid(row=7, column=1, columnspan=2, sticky="w", padx=15, pady=5)
+        self.ssh_host_entry.grid(row=9, column=1, columnspan=2, sticky="w", padx=15, pady=5)
 
         # Provider preset selector
         provider_lbl = ctk.CTkLabel(container, text=self.tr("provider_label"))
-        provider_lbl.grid(row=8, column=0, sticky="w", padx=15, pady=5)
+        provider_lbl.grid(row=10, column=0, sticky="w", padx=15, pady=5)
         self.provider_menu = ctk.CTkOptionMenu(
             container,
             values=list(self.PROVIDER_HOSTS.keys()),
@@ -807,26 +837,67 @@ class GitSSHAutomationApp(ctk.CTk):
             command=self.on_provider_selected,
         )
         self.provider_menu.set(self.GITHUB)
-        self.provider_menu.grid(row=8, column=1, columnspan=2, sticky="w", padx=15, pady=5)
+        self.provider_menu.grid(row=10, column=1, columnspan=2, sticky="w", padx=15, pady=5)
 
         # True Host
         ssh_real_host_lbl = ctk.CTkLabel(container, text=self.tr("real_host_label"))
-        ssh_real_host_lbl.grid(row=9, column=0, sticky="w", padx=15, pady=5)
+        ssh_real_host_lbl.grid(row=11, column=0, sticky="w", padx=15, pady=5)
         self.ssh_real_host_entry = ctk.CTkEntry(container, placeholder_text=self.tr("real_host_placeholder"), width=250)
-        self.ssh_real_host_entry.grid(row=9, column=1, columnspan=2, sticky="w", padx=15, pady=5)
+        self.ssh_real_host_entry.grid(row=11, column=1, columnspan=2, sticky="w", padx=15, pady=5)
         self.ssh_real_host_entry.insert(0, self.PROVIDER_HOSTS[self.GITHUB])
         self.ssh_real_host_entry.bind(self.KEY_RELEASE_EVENT, self.update_ssh_host_suggestion)
 
         # Auto-gen SSH Checkbox
         self.gen_ssh_var = ctk.BooleanVar(value=True)
-        self.gen_ssh_chk = ctk.CTkCheckBox(container, text=self.tr("gen_ssh_checkbox"), variable=self.gen_ssh_var)
-        self.gen_ssh_chk.grid(row=10, column=0, columnspan=3, sticky="w", padx=15, pady=(10, 5))
+        self.gen_ssh_chk = ctk.CTkCheckBox(container, text=self.tr("gen_ssh_checkbox"), variable=self.gen_ssh_var, command=self.update_key_type_visibility)
+        self.gen_ssh_chk.grid(row=12, column=0, columnspan=3, sticky="w", padx=15, pady=(10, 5))
+
+        # SSH Key Type (only visible when gen_ssh is checked)
+        ssh_key_type_lbl = ctk.CTkLabel(container, text=self.tr("edit_key_type_label"))
+        ssh_key_type_lbl.grid(row=13, column=0, sticky="w", padx=15, pady=(5, 0))
+        self.ssh_key_type_var = ctk.StringVar(value="ed25519")
+        self.ssh_key_type_menu = ctk.CTkOptionMenu(
+            container,
+            values=self.SSH_KEY_TYPES,
+            variable=self.ssh_key_type_var,
+            width=250,
+        )
+        self.ssh_key_type_menu.grid(row=13, column=1, columnspan=2, sticky="w", padx=15, pady=(5, 0))
+
+        # Help text for SSH key types
+        help_text = (
+            "💡 Se elige automáticamente según el proveedor:\n"
+            "   • GitHub, GitLab, Bitbucket → Ed25519 (moderno y seguro)\n"
+            "   • Azure DevOps → RSA (por compatibilidad)\n"
+            "   Puedes cambiar manualmente si lo necesitas."
+        ) if self.lang == "es" else (
+            "💡 Automatically selected based on provider:\n"
+            "   • GitHub, GitLab, Bitbucket → Ed25519 (modern & secure)\n"
+            "   • Azure DevOps → RSA (for compatibility)\n"
+            "   You can change manually if needed."
+        )
+        key_type_help = ctk.CTkLabel(
+            container,
+            text=help_text,
+            text_color="gray",
+            font=ctk.CTkFont(size=9),
+            justify="left",
+            anchor="w"
+        )
+        key_type_help.grid(row=14, column=0, columnspan=3, sticky="w", padx=15, pady=(2, 5))
 
         # ACTION BUTTON
         self.run_btn = ctk.CTkButton(container, text=self.tr("run_btn"), font=ctk.CTkFont(size=15, weight="bold"), height=40, command=self.execute_automation)
-        self.run_btn.grid(row=11, column=0, columnspan=3, pady=(15, 10))
+        self.run_btn.grid(row=15, column=0, columnspan=3, pady=(15, 10))
 
         self.update_ssh_host_suggestion()
+
+    def update_key_type_visibility(self):
+        """Show/hide SSH key type selector based on 'gen_ssh' checkbox."""
+        if self.gen_ssh_var.get():
+            self.ssh_key_type_menu.configure(state="normal")
+        else:
+            self.ssh_key_type_menu.configure(state="disabled")
 
     def on_provider_selected(self, choice):
         host = self.PROVIDER_HOSTS.get(choice, "")
@@ -836,6 +907,11 @@ class GitSSHAutomationApp(ctk.CTk):
             self.ssh_real_host_entry.configure(state="normal")
         else:
             self.ssh_real_host_entry.configure(placeholder_text=self.tr("self_hosted_placeholder"))
+
+        # Auto-select recommended SSH key type for this provider
+        recommended_key_type = self.PROVIDER_KEY_TYPES.get(choice, "ed25519")
+        self.ssh_key_type_var.set(recommended_key_type)
+
         self.update_ssh_host_suggestion()
 
     def update_ssh_host_suggestion(self, _event=None):
@@ -1128,17 +1204,18 @@ class GitSSHAutomationApp(ctk.CTk):
         target_dir = self.selected_base_path.get().strip()
         provider = self.provider_menu.get()
         gen_ssh = self.gen_ssh_var.get()
+        ssh_key_type = self.ssh_key_type_var.get() if gen_ssh else "ed25519"
 
         if not all([profile_id, git_name, git_email, ssh_host, real_host, target_dir]):
             messagebox.showerror(self.tr("incomplete_fields_title"), self.tr("incomplete_fields_msg"))
             return
 
-        self.open_create_confirmation(profile_id, git_name, git_email, ssh_host, real_host, target_dir, provider, gen_ssh)
+        self.open_create_confirmation(profile_id, git_name, git_email, ssh_host, real_host, target_dir, provider, gen_ssh, ssh_key_type)
 
-    def open_create_confirmation(self, profile_id, git_name, git_email, ssh_host, real_host, target_dir, provider, gen_ssh):
+    def open_create_confirmation(self, profile_id, git_name, git_email, ssh_host, real_host, target_dir, provider, gen_ssh, ssh_key_type="ed25519"):
         dialog = ctk.CTkToplevel(self)
         dialog.title(self.tr("confirm_dialog_title"))
-        dialog.geometry("480x420")
+        dialog.geometry("480x480")
         dialog.resizable(False, False)
         dialog.transient(self)
         dialog.grab_set()
@@ -1149,6 +1226,7 @@ class GitSSHAutomationApp(ctk.CTk):
         title_lbl = ctk.CTkLabel(frame, text=self.tr("confirm_review_title"), font=ctk.CTkFont(size=15, weight="bold"), wraplength=420, justify="left")
         title_lbl.pack(anchor="w", pady=(0, 10))
 
+        gen_ssh_text = f"{self.tr('yes')} ({ssh_key_type.upper()})" if gen_ssh else self.tr("no")
         summary_text = "\n".join([
             self.tr("summary_profile_id", v=profile_id),
             self.tr("summary_folder", v=target_dir),
@@ -1157,7 +1235,7 @@ class GitSSHAutomationApp(ctk.CTk):
             self.tr("summary_provider", v=provider),
             self.tr("summary_ssh_alias", v=ssh_host),
             self.tr("summary_real_provider", v=real_host),
-            self.tr("summary_gen_ssh", v=self.tr("yes") if gen_ssh else self.tr("no")),
+            self.tr("summary_gen_ssh", v=gen_ssh_text),
         ])
         summary_lbl = ctk.CTkLabel(frame, text=summary_text, justify="left", anchor="w", wraplength=420)
         summary_lbl.pack(anchor="w", pady=(0, 15))
@@ -1171,7 +1249,7 @@ class GitSSHAutomationApp(ctk.CTk):
 
         def confirm_create():
             dialog.destroy()
-            self.create_profile(profile_id, git_name, git_email, ssh_host, real_host, target_dir, provider, gen_ssh)
+            self.create_profile(profile_id, git_name, git_email, ssh_host, real_host, target_dir, provider, gen_ssh, ssh_key_type)
 
         confirm_btn = ctk.CTkButton(frame, text=self.tr("confirm_save_btn"), command=confirm_create)
         confirm_btn.pack(pady=(5, 5))
@@ -1199,9 +1277,10 @@ class GitSSHAutomationApp(ctk.CTk):
         prefix = content.split(" ", 1)[0] if content else ""
         return self.SSH_KEY_TYPE_BY_PREFIX.get(prefix, "")
 
-    def create_profile(self, profile_id, git_name, git_email, ssh_host, real_host, target_dir, provider, gen_ssh):
+    def create_profile(self, profile_id, git_name, git_email, ssh_host, real_host, target_dir, provider, gen_ssh, ssh_key_type="ed25519"):
         sub_gitconfig = os.path.expanduser(f"~/.gitconfig-{profile_id}")
-        ssh_key_name = f"id_rsa_{profile_id}"
+        ssh_key_prefix = f"id_{ssh_key_type}_" if ssh_key_type != "rsa" else "id_rsa_"
+        ssh_key_name = f"{ssh_key_prefix}{profile_id}"
         ssh_key_path = os.path.join(self.ssh_dir, ssh_key_name)
 
         try:
@@ -1241,9 +1320,9 @@ class GitSSHAutomationApp(ctk.CTk):
                 if os.path.exists(ssh_key_path):
                     self.log(self.tr("log_ssh_key_skip", name=ssh_key_name))
                 else:
-                    # Execute ssh-keygen (RSA, required by servers expecting "ssh-rsa" keys)
-                    self.log(self.tr("log_ssh_generating", type="RSA", email=git_email))
-                    cmd = self._ssh_keygen_cmd("rsa", ssh_key_path, git_email)
+                    # Execute ssh-keygen with selected key type
+                    self.log(self.tr("log_ssh_generating", type=ssh_key_type.upper(), email=git_email))
+                    cmd = self._ssh_keygen_cmd(ssh_key_type, ssh_key_path, git_email)
                     # Run without prompting
                     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
                     self.log(self.tr("log_ssh_created", path=ssh_key_path))
@@ -1507,27 +1586,108 @@ class GitSSHAutomationApp(ctk.CTk):
             return
 
         for profile in profiles:
-            row = ctk.CTkFrame(self.profiles_scroll)
-            row.pack(fill="x", padx=5, pady=4)
+            self._create_profile_card(self.profiles_scroll, profile)
 
-            name_text = profile["name"] or self.tr("list_no_name")
-            email_text = profile["email"] or self.tr("list_no_email")
-            details = f"🧩 {profile['id']}  —  {name_text} <{email_text}>\n"
-            details += f"📁 {profile['target_dir']}"
-            if profile["ssh_host"]:
-                details += "\n" + self.tr("list_ssh_host_line", host=profile["ssh_host"], real_host=profile["real_host"])
+    def _get_provider_emoji(self, real_host):
+        """Get emoji for provider based on real_host."""
+        host_lower = real_host.lower() if real_host else ""
+        if "github.com" in host_lower:
+            return "🐙"
+        elif "gitlab" in host_lower:
+            return "🦊"
+        elif "bitbucket" in host_lower:
+            return "🪣"
+        elif "azure" in host_lower or "dev.azure" in host_lower:
+            return "☁️"
+        else:
+            return "🔗"
 
-            lbl = ctk.CTkLabel(row, text=details, justify="left", anchor="w")
-            lbl.pack(side="left", padx=10, pady=8, fill="x", expand=True)
+    def _create_profile_card(self, parent, profile):
+        """Create a visual card for a profile."""
+        # Main card frame with border effect using bg frame
+        card_bg = ctk.CTkFrame(parent, fg_color=("gray95", "gray15"), corner_radius=8)
+        card_bg.pack(fill="x", padx=8, pady=6)
 
-            delete_btn = ctk.CTkButton(
-                row, text=self.tr("delete_row_btn"), width=90, fg_color="#a83232", hover_color="#802424",
-                command=lambda p=profile: self.open_delete_dialog(p),
+        card = ctk.CTkFrame(card_bg, corner_radius=6)
+        card.pack(fill="x", padx=1, pady=1)
+
+        # Top bar with profile name and provider emoji
+        top_bar = ctk.CTkFrame(card, fg_color=("gray85", "gray25"), corner_radius=6)
+        top_bar.pack(fill="x", padx=12, pady=(12, 6))
+
+        provider_emoji = self._get_provider_emoji(profile["real_host"])
+        profile_title = f"{provider_emoji} {profile['id'].upper()}"
+        title_lbl = ctk.CTkLabel(top_bar, text=profile_title, font=ctk.CTkFont(size=13, weight="bold"))
+        title_lbl.pack(side="left", padx=(8, 4), pady=8)
+
+        # Status badge
+        ssh_status = "✅" if profile.get("ssh_key_path") else "⚠️"
+        status_lbl = ctk.CTkLabel(top_bar, text=ssh_status, font=ctk.CTkFont(size=11))
+        status_lbl.pack(side="right", padx=8, pady=8)
+
+        # Details section
+        name_text = profile["name"] or self.tr("list_no_name")
+        email_text = profile["email"] or self.tr("list_no_email")
+
+        details_text = f"{name_text}\n{email_text}"
+        details_lbl = ctk.CTkLabel(
+            card,
+            text=details_text,
+            justify="left",
+            anchor="w",
+            font=ctk.CTkFont(size=11),
+        )
+        details_lbl.pack(anchor="w", padx=12, pady=(0, 6))
+
+        # Folder path
+        folder_lbl = ctk.CTkLabel(
+            card,
+            text=f"📁  {profile['target_dir']}",
+            justify="left",
+            anchor="w",
+            text_color="gray",
+            font=ctk.CTkFont(size=10),
+            wraplength=400,
+        )
+        folder_lbl.pack(anchor="w", padx=12, pady=(0, 6))
+
+        # SSH info if available
+        if profile["ssh_host"]:
+            ssh_text = f"🔑  {profile['ssh_host']} → {profile['real_host']}"
+            ssh_lbl = ctk.CTkLabel(
+                card,
+                text=ssh_text,
+                justify="left",
+                anchor="w",
+                text_color="gray",
+                font=ctk.CTkFont(size=10),
+                wraplength=400,
             )
-            delete_btn.pack(side="right", padx=(0, 10), pady=8)
+            ssh_lbl.pack(anchor="w", padx=12, pady=(0, 6))
 
-            edit_btn = ctk.CTkButton(row, text=self.tr("edit_row_btn"), width=90, command=lambda p=profile: self.open_edit_dialog(p))
-            edit_btn.pack(side="right", padx=10, pady=8)
+        # Action buttons
+        button_frame = ctk.CTkFrame(card, fg_color="transparent")
+        button_frame.pack(fill="x", padx=12, pady=(6, 12))
+
+        edit_btn = ctk.CTkButton(
+            button_frame,
+            text=self.tr("edit_row_btn"),
+            width=110,
+            font=ctk.CTkFont(size=10),
+            command=lambda p=profile: self.open_edit_dialog(p),
+        )
+        edit_btn.pack(side="left", padx=(0, 6))
+
+        delete_btn = ctk.CTkButton(
+            button_frame,
+            text=self.tr("delete_row_btn"),
+            width=110,
+            font=ctk.CTkFont(size=10),
+            fg_color="#a83232",
+            hover_color="#802424",
+            command=lambda p=profile: self.open_delete_dialog(p),
+        )
+        delete_btn.pack(side="left")
 
     def open_edit_dialog(self, profile):
         dialog = ctk.CTkToplevel(self)
