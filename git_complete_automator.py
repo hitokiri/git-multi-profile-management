@@ -1035,10 +1035,36 @@ class GitSSHAutomationApp(ctk.CTk):
         self.clone_status_lbl.configure(text=text, text_color="#2e7d32" if ok else "#a83232")
         self.clone_btn.configure(state="normal" if ok else "disabled")
 
+    def find_matching_profile_for_url(self, url):
+        """Try to find a profile that matches the given clone URL's host and organization."""
+        parsed = self.parse_ssh_clone_url(url)
+        if not parsed:
+            return None
+
+        url_host = parsed["host"].lower()
+        url_org = self.extract_repo_organization(parsed["path"]).lower()
+
+        for profile_id, profile in self._clone_profiles.items():
+            if profile["real_host"].lower() == url_host and profile_id.lower() == url_org:
+                return profile_id
+
+        return None
+
     def validate_clone_form(self):
+        url = self.clone_url_entry.get().strip()
+
+        # Try to auto-select matching profile if URL is valid
+        if url:
+            parsed = self.parse_ssh_clone_url(url)
+            if parsed:
+                matching_profile_id = self.find_matching_profile_for_url(url)
+                if matching_profile_id and matching_profile_id in self._clone_profiles:
+                    current = self.clone_profile_menu.get()
+                    if current != matching_profile_id:
+                        self.clone_profile_menu.set(matching_profile_id)
+
         profile_id = self.clone_profile_menu.get()
         profile = self._clone_profiles.get(profile_id)
-        url = self.clone_url_entry.get().strip()
 
         if not profile:
             self._set_clone_status(self.tr("clone_status_no_profiles"), ok=False)
