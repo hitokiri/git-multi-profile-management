@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 import os
 import re
+import sys
+import json
+import queue
+import base64
+import shutil
+import threading
 import subprocess
 import customtkinter as ctk
 from tkinter import messagebox, filedialog, simpledialog
@@ -12,6 +18,44 @@ ctk.set_default_color_theme("blue")
 THEME_FILE = os.path.expanduser("~/.git_multiprofile_theme")
 LANG_FILE = os.path.expanduser("~/.git_multiprofile_lang")
 GITHUB_COM = "github.com"
+
+
+class UI:
+    """Design tokens: single source of truth for colors, spacing and type scale,
+    so a look-and-feel change happens in one place instead of N scattered literals.
+
+    Status/text colors are (light, dark) tuples on purpose: a flat hex string is
+    always wrong in one of the two appearance modes (e.g. the old flat "gray" help
+    text read almost illegible in dark mode). Button fills (DANGER_*, CAUTION_*)
+    stay flat hex intentionally - a destructive action should look the same
+    regardless of theme, that's the whole point of the color-coding.
+    """
+
+    SUCCESS = ("#2e7d32", "#81c784")
+    ERROR = ("#a83232", "#ef9a9a")
+    WARNING = ("#8a6d00", "#e0c060")
+    MUTED = ("gray35", "gray65")
+
+    DANGER_BG = "#a83232"
+    DANGER_HOVER = "#802424"
+    CAUTION_BG = "#7a5c00"
+    CAUTION_HOVER = "#5c4500"
+    NEUTRAL_BTN = "gray"
+
+    PAD_S = 5
+    PAD_M = 10
+    PAD_L = 15
+
+    # Type scale (px). SIZE_HELP was 9-10 in several spots - below a comfortable
+    # reading size for secondary text; raised to a shared, legible minimum.
+    SIZE_HELP = 11
+    SIZE_BODY = 12
+    SIZE_LABEL_SM = 13
+    SIZE_SECTION = 14
+    SIZE_LG = 15
+    SIZE_XL = 18
+    SIZE_HEADER = 22
+
 
 I18N = {
     "es": {
@@ -204,16 +248,48 @@ I18N = {
         "clone_status_invalid_url": "Esa URL no parece una URL SSH válida (debe verse como 'git@host:usuario/repo.git').",
         "clone_status_host_mismatch": "❌ Este repositorio es de '{host}', pero el perfil '{id}' está configurado para '{real_host}'. Elige el perfil correcto o corrige la URL.",
         "clone_status_org_mismatch": "❌ Este repositorio pertenece a la organización '{org}', pero el perfil '{id}' es para la organización '{id}'. El ID de perfil debe ser igual a la organización del repositorio (así se evita clonar repos de otra empresa en la carpeta equivocada).",
-        "clone_status_ok": "✅ Coincide. Se clonará con el alias '{alias}' dentro de:\n{dir}",
-        "clone_error_title": "Error al clonar",
-        "clone_error_msg": "No se pudo clonar el repositorio:\n{e}",
-        "clone_done_title": "Repositorio clonado",
-        "clone_done_msg": "Se clonó correctamente dentro de:\n{dir}",
+        "clone_status_ok": "✅ Coincide. Se clonará con el alias '{alias}' en:\n{dest}",
         "log_clone_start": "Clonando en '{dir}' usando el perfil '{id}'...",
         "log_clone_cmd": "Comando: git clone {url}",
         "log_clone_ok": "✅ Repositorio clonado correctamente en {dir}",
         "log_clone_error": "ERROR AL CLONAR: {e}",
         "git_clone_failed": "git clone falló",
+
+        # clone progress / result
+        "clone_btn_cancel": "✖ Cancelar clonado",
+        "clone_phase_starting": "Conectando con {host}...",
+        "clone_phase_counting": "Contando objetos... {pct}%",
+        "clone_phase_compressing": "Comprimiendo objetos... {pct}%",
+        "clone_phase_receiving": "Recibiendo objetos {pct}%{extra}",
+        "clone_phase_resolving": "Resolviendo deltas {pct}%",
+        "clone_phase_checkout": "Escribiendo archivos {pct}%",
+        "clone_phase_cancelling": "Cancelando...",
+        "clone_status_busy": "⏳ Clonando '{repo}'. Puedes cancelar en cualquier momento.",
+        "clone_result_ok_title": "✅ Repositorio clonado",
+        "clone_result_err_title": "❌ No se pudo clonar",
+        "clone_result_cancel_title": "⚠ Clonado cancelado",
+        "clone_result_cancel_msg": "Se canceló el clonado y se borró la carpeta parcial.",
+        "clone_open_folder_btn": "📂 Abrir carpeta",
+        "clone_copy_path_btn": "📋 Copiar ruta",
+        "clone_another_btn": "➕ Clonar otro",
+        "clone_details_show_btn": "▸ Ver detalle técnico",
+        "clone_details_hide_btn": "▾ Ocultar detalle técnico",
+        "clone_path_copied": "Ruta copiada al portapapeles.",
+        # pre-flight checks
+        "clone_err_no_git": "No se encontró el comando 'git' en el PATH. Instala Git y vuelve a intentarlo.",
+        "clone_err_dir_not_writable": "No se puede escribir en la carpeta del perfil:\n{dir}",
+        "clone_err_dest_exists": "Ya existe una carpeta con ese nombre:\n{dest}\nRenómbrala, bórrala o clona en otro perfil.",
+        "clone_err_key_missing": "La llave SSH del perfil no está en el disco:\n{path}\nRegenérala desde la pestaña 'Mis Perfiles' (Editar → rotar llave).",
+        # friendly error hints
+        "clone_err_publickey": "El servidor rechazó la llave SSH. Revisa que la llave pública del perfil esté añadida en el proveedor, y que no tenga passphrase (esta app no puede pedirla al clonar).",
+        "clone_err_repo_not_found": "El repositorio no existe o esta cuenta no tiene acceso. Revisa la URL y los permisos de la cuenta del perfil.",
+        "clone_err_host_key": "La huella del servidor cambió o no coincide. Revisa '~/.ssh/known_hosts' antes de continuar (puede ser un problema de seguridad real).",
+        "clone_err_network": "No se pudo conectar con el servidor. Revisa tu conexión de red y el host del alias SSH en '~/.ssh/config'.",
+        "clone_err_dest_exists_git": "La carpeta de destino ya existe y no está vacía. Bórrala o usa otro nombre.",
+        "clone_err_unknown": "git clone falló. Revisa el detalle técnico para más información.",
+        "log_clone_cancelled": "⚠ Clonado cancelado por el usuario.",
+        "log_clone_partial_removed": "Carpeta parcial eliminada: {dest}",
+        "log_open_folder_error": "No se pudo abrir el explorador de archivos: {e}",
 
         # new folder flow
         "new_folder_dialog_title": "Elige dónde crear la nueva carpeta",
@@ -263,6 +339,26 @@ I18N = {
         "copier_copied_msg": "¡Clave SSH copiada al portapapeles!",
         "copier_guide_label": "Guía de uso para este perfil:",
         "copier_close_btn": "Cerrar",
+
+        # import/export
+        "export_profile_btn": "📤 Exportar",
+        "export_all_btn": "📥 Importar Todo",
+        "export_dialog_title": "Exportar perfil: {id}",
+        "export_single_title": "Exportar perfil individual",
+        "export_all_title": "Importar todos los perfiles",
+        "export_success": "Perfil exportado correctamente",
+        "export_all_success": "{n} perfil(es) exportado(s)",
+        "import_select_title": "Seleccionar archivo de importación",
+        "import_success": "{n} perfil(es) importado(s)",
+        "import_conflict_title": "Conflicto de perfiles",
+        "import_conflict_msg": "Los siguientes perfiles ya existen: {ids}. ¿Sobrescribir?",
+        "import_invalid_format": "El archivo no tiene un formato JSON válido",
+        "import_version_unsupported": "Versión no soportada: {v}",
+        "import_overwrite_checkbox": "Sobrescribir perfiles existentes",
+        "import_confirmed_title": "Confirmar importación",
+        "import_confirmed_msg": "Se van a importar {n} perfil(es):\n\n{profiles}\n\nSe creará la configuración Git y SSH en tu máquina.",
+        "import_error_title": "Error al importar",
+        "import_error_msg": "Ocurrió un error durante la importación:\n{e}",
     },
     "en": {
         "window_title": "Git Multi-Profile & SSH Automator",
@@ -454,16 +550,48 @@ I18N = {
         "clone_status_invalid_url": "That URL doesn't look like a valid SSH URL (it should look like 'git@host:user/repo.git').",
         "clone_status_host_mismatch": "❌ This repository is from '{host}', but profile '{id}' is configured for '{real_host}'. Pick the right profile or fix the URL.",
         "clone_status_org_mismatch": "❌ This repository belongs to organization '{org}', but profile '{id}' is for organization '{id}'. The profile ID must match the repository's organization (this prevents cloning another company's repos into the wrong folder).",
-        "clone_status_ok": "✅ Match. It will be cloned with alias '{alias}' inside:\n{dir}",
-        "clone_error_title": "Clone error",
-        "clone_error_msg": "Could not clone the repository:\n{e}",
-        "clone_done_title": "Repository cloned",
-        "clone_done_msg": "Successfully cloned into:\n{dir}",
+        "clone_status_ok": "✅ Match. It will be cloned with alias '{alias}' into:\n{dest}",
         "log_clone_start": "Cloning into '{dir}' using profile '{id}'...",
         "log_clone_cmd": "Command: git clone {url}",
         "log_clone_ok": "✅ Repository cloned successfully into {dir}",
         "log_clone_error": "CLONE ERROR: {e}",
         "git_clone_failed": "git clone failed",
+
+        # clone progress / result
+        "clone_btn_cancel": "✖ Cancel clone",
+        "clone_phase_starting": "Connecting to {host}...",
+        "clone_phase_counting": "Counting objects... {pct}%",
+        "clone_phase_compressing": "Compressing objects... {pct}%",
+        "clone_phase_receiving": "Receiving objects {pct}%{extra}",
+        "clone_phase_resolving": "Resolving deltas {pct}%",
+        "clone_phase_checkout": "Writing files {pct}%",
+        "clone_phase_cancelling": "Cancelling...",
+        "clone_status_busy": "⏳ Cloning '{repo}'. You can cancel at any time.",
+        "clone_result_ok_title": "✅ Repository cloned",
+        "clone_result_err_title": "❌ Clone failed",
+        "clone_result_cancel_title": "⚠ Clone cancelled",
+        "clone_result_cancel_msg": "The clone was cancelled and the partial folder was removed.",
+        "clone_open_folder_btn": "📂 Open folder",
+        "clone_copy_path_btn": "📋 Copy path",
+        "clone_another_btn": "➕ Clone another",
+        "clone_details_show_btn": "▸ Show technical details",
+        "clone_details_hide_btn": "▾ Hide technical details",
+        "clone_path_copied": "Path copied to clipboard.",
+        # pre-flight checks
+        "clone_err_no_git": "The 'git' command was not found in PATH. Install Git and try again.",
+        "clone_err_dir_not_writable": "The profile folder is not writable:\n{dir}",
+        "clone_err_dest_exists": "A folder with that name already exists:\n{dest}\nRename it, delete it, or clone into another profile.",
+        "clone_err_key_missing": "The profile's SSH key is not on disk:\n{path}\nRegenerate it from the 'My Profiles' tab (Edit → rotate key).",
+        # friendly error hints
+        "clone_err_publickey": "The server rejected the SSH key. Check that the profile's public key is added at the provider, and that it has no passphrase (this app can't prompt for one while cloning).",
+        "clone_err_repo_not_found": "The repository doesn't exist or this account has no access to it. Check the URL and the profile account's permissions.",
+        "clone_err_host_key": "The server's host key changed or doesn't match. Check '~/.ssh/known_hosts' before continuing (this can be a real security issue).",
+        "clone_err_network": "Could not reach the server. Check your network connection and the SSH alias host in '~/.ssh/config'.",
+        "clone_err_dest_exists_git": "The destination folder already exists and is not empty. Delete it or use another name.",
+        "clone_err_unknown": "git clone failed. Check the technical details for more information.",
+        "log_clone_cancelled": "⚠ Clone cancelled by the user.",
+        "log_clone_partial_removed": "Partial folder removed: {dest}",
+        "log_open_folder_error": "Could not open the file manager: {e}",
 
         # new folder flow
         "new_folder_dialog_title": "Choose where to create the new folder",
@@ -513,6 +641,26 @@ I18N = {
         "copier_copied_msg": "SSH key copied to clipboard!",
         "copier_guide_label": "Usage guide for this profile:",
         "copier_close_btn": "Close",
+
+        # import/export
+        "export_profile_btn": "📤 Export",
+        "export_all_btn": "📥 Import All",
+        "export_dialog_title": "Export profile: {id}",
+        "export_single_title": "Export single profile",
+        "export_all_title": "Import all profiles",
+        "export_success": "Profile exported successfully",
+        "export_all_success": "{n} profile(s) exported",
+        "import_select_title": "Select import file",
+        "import_success": "{n} profile(s) imported",
+        "import_conflict_title": "Profile conflict",
+        "import_conflict_msg": "The following profiles already exist: {ids}. Overwrite?",
+        "import_invalid_format": "The file is not a valid JSON format",
+        "import_version_unsupported": "Unsupported version: {v}",
+        "import_overwrite_checkbox": "Overwrite existing profiles",
+        "import_confirmed_title": "Confirm import",
+        "import_confirmed_msg": "About to import {n} profile(s):\n\n{profiles}\n\nGit and SSH configuration will be created on your machine.",
+        "import_error_title": "Import error",
+        "import_error_msg": "An error occurred during import:\n{e}",
     },
 }
 
@@ -537,8 +685,10 @@ class GitSSHAutomationApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
+        # Real size comes later, once the widgets that decide it exist
+        # (see _size_window_to_content); this placeholder just avoids a flash
+        # of the Tk default 1x1 geometry while everything is being built.
         self.geometry("720x850")
-        self.resizable(False, False)
 
         # Paths
         self.gitconfig_path = os.path.expanduser("~/.gitconfig")
@@ -553,6 +703,7 @@ class GitSSHAutomationApp(ctk.CTk):
         self.lang = self._load_language()
         self._build_provider_data()
         self.create_widgets()
+        self._size_window_to_content()
 
     # ------------------------------------------------------------------
     # i18n
@@ -632,6 +783,12 @@ class GitSSHAutomationApp(ctk.CTk):
         if new_lang == self.lang or new_lang not in I18N:
             return
 
+        # Switching language rebuilds every widget; doing that mid-clone would leave
+        # the progress poller writing to destroyed labels.
+        if getattr(self, "_clone_busy", False):
+            self.lang_switch.set(self.lang.upper())
+            return
+
         state = self._capture_form_state()
 
         self.lang = new_lang
@@ -641,6 +798,7 @@ class GitSSHAutomationApp(ctk.CTk):
         for widget in self.winfo_children():
             widget.destroy()
         self.create_widgets()
+        self._size_window_to_content()
 
         self._restore_form_state(state)
 
@@ -715,6 +873,25 @@ class GitSSHAutomationApp(ctk.CTk):
     # UI construction
     # ------------------------------------------------------------------
 
+    def _size_window_to_content(self):
+        """Fixed, non-resizable window sized to what the content actually
+        needs - not guessed. The old flat "720x850" was shorter than the
+        'Crear Perfil' tab actually needs (~1000px), so Tk was silently
+        squeezing the console log down to ~18px to make everything else fit -
+        that's likely a real reason console feedback felt like it wasn't
+        there. Measuring after building fixes that without guessing again.
+
+        Deliberately non-resizable: a resizable window sounded nice, but in
+        practice it caused enough friction that it's not worth it here - and
+        customtkinter's own reqheight reporting turned out unreliable once a
+        window had been resized even once, which made "grow back safely"
+        logic fragile. Simplicity wins for this app.
+        """
+        self.update_idletasks()
+        w, h = max(720, self.winfo_reqwidth()), self.winfo_reqheight()
+        self.geometry(f"{w}x{h}")
+        self.resizable(False, False)
+
     def create_widgets(self):
         self.title(self.tr("window_title"))
         self.TAB_CREATE = self.tr("tab_create")
@@ -725,12 +902,12 @@ class GitSSHAutomationApp(ctk.CTk):
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=20, pady=(15, 0))
 
-        title_lbl = ctk.CTkLabel(header, text=self.tr("header_title"), font=ctk.CTkFont(size=22, weight="bold"))
+        title_lbl = ctk.CTkLabel(header, text=self.tr("header_title"), font=ctk.CTkFont(size=UI.SIZE_HEADER, weight="bold"))
         title_lbl.pack(side="left")
 
-        lang_switch = ctk.CTkSegmentedButton(header, values=["ES", "EN"], width=100, command=self.on_language_changed)
-        lang_switch.set(self.lang.upper())
-        lang_switch.pack(side="right")
+        self.lang_switch = ctk.CTkSegmentedButton(header, values=["ES", "EN"], width=100, command=self.on_language_changed)
+        self.lang_switch.set(self.lang.upper())
+        self.lang_switch.pack(side="right")
 
         # Tabs: creation form, profile list/management, then cloning (last, needs an existing profile)
         self.tabview = ctk.CTkTabview(self, command=self.on_tab_change)
@@ -757,13 +934,13 @@ class GitSSHAutomationApp(ctk.CTk):
         container.pack(fill="both", expand=True, padx=5, pady=5)
 
         # SECTION 1: Folder setup
-        sect1_lbl = ctk.CTkLabel(container, text=self.tr("section1_title"), font=ctk.CTkFont(size=14, weight="bold"))
+        sect1_lbl = ctk.CTkLabel(container, text=self.tr("section1_title"), font=ctk.CTkFont(size=UI.SIZE_SECTION, weight="bold"))
         sect1_lbl.grid(row=0, column=0, columnspan=3, sticky="w", padx=15, pady=(10, 5))
 
         sect1_help = ctk.CTkLabel(
             container,
             text=self.tr("section1_help"),
-            text_color="gray", justify="left", anchor="w", wraplength=480, font=ctk.CTkFont(size=10)
+            text_color=UI.MUTED, justify="left", anchor="w", wraplength=480, font=ctk.CTkFont(size=UI.SIZE_HELP)
         )
         sect1_help.grid(row=1, column=0, columnspan=3, sticky="w", padx=15, pady=(0, 10))
 
@@ -785,13 +962,13 @@ class GitSSHAutomationApp(ctk.CTk):
         new_folder_btn.pack(side="left")
 
         # SECTION 2: Profile Info
-        sect2_lbl = ctk.CTkLabel(container, text=self.tr("section2_title"), font=ctk.CTkFont(size=14, weight="bold"))
+        sect2_lbl = ctk.CTkLabel(container, text=self.tr("section2_title"), font=ctk.CTkFont(size=UI.SIZE_SECTION, weight="bold"))
         sect2_lbl.grid(row=3, column=0, columnspan=3, sticky="w", padx=15, pady=(15, 5))
 
         sect2_help = ctk.CTkLabel(
             container,
             text=self.tr("section2_help"),
-            text_color="gray", justify="left", anchor="w", wraplength=480, font=ctk.CTkFont(size=10)
+            text_color=UI.MUTED, justify="left", anchor="w", wraplength=480, font=ctk.CTkFont(size=UI.SIZE_HELP)
         )
         sect2_help.grid(row=4, column=0, columnspan=3, sticky="w", padx=15, pady=(0, 10))
 
@@ -805,7 +982,7 @@ class GitSSHAutomationApp(ctk.CTk):
         p_id_help_lbl = ctk.CTkLabel(
             container,
             text=self.tr("profile_id_help"),
-            text_color="gray", justify="left", anchor="w", wraplength=480, font=ctk.CTkFont(size=11),
+            text_color=UI.MUTED, justify="left", anchor="w", wraplength=480, font=ctk.CTkFont(size=UI.SIZE_HELP),
         )
         p_id_help_lbl.grid(row=6, column=0, columnspan=3, sticky="w", padx=15, pady=(0, 5))
 
@@ -879,15 +1056,15 @@ class GitSSHAutomationApp(ctk.CTk):
         key_type_help = ctk.CTkLabel(
             container,
             text=help_text,
-            text_color="gray",
-            font=ctk.CTkFont(size=9),
+            text_color=UI.MUTED,
+            font=ctk.CTkFont(size=UI.SIZE_HELP),
             justify="left",
             anchor="w"
         )
         key_type_help.grid(row=14, column=0, columnspan=3, sticky="w", padx=15, pady=(2, 5))
 
         # ACTION BUTTON
-        self.run_btn = ctk.CTkButton(container, text=self.tr("run_btn"), font=ctk.CTkFont(size=15, weight="bold"), height=40, command=self.execute_automation)
+        self.run_btn = ctk.CTkButton(container, text=self.tr("run_btn"), font=ctk.CTkFont(size=UI.SIZE_LG, weight="bold"), height=40, command=self.execute_automation)
         self.run_btn.grid(row=15, column=0, columnspan=3, pady=(15, 10))
 
         self.update_ssh_host_suggestion()
@@ -932,10 +1109,18 @@ class GitSSHAutomationApp(ctk.CTk):
     def create_clone_tab(self, parent):
         self._clone_profiles = {}
 
+        # Clone runs in a worker thread; these hold its state while it does.
+        self._clone_busy = False
+        self._clone_proc = None
+        self._clone_queue = None
+        self._clone_cancel_requested = False
+        self._clone_dest = ""
+        self._clone_indeterminate = False
+
         container = ctk.CTkFrame(parent)
         container.pack(fill="both", expand=True, padx=5, pady=5)
 
-        title_lbl = ctk.CTkLabel(container, text=self.tr("clone_title"), font=ctk.CTkFont(size=14, weight="bold"))
+        title_lbl = ctk.CTkLabel(container, text=self.tr("clone_title"), font=ctk.CTkFont(size=UI.SIZE_SECTION, weight="bold"))
         title_lbl.grid(row=0, column=0, columnspan=2, sticky="w", padx=15, pady=(10, 15))
 
         profile_lbl = ctk.CTkLabel(container, text=self.tr("clone_profile_label"))
@@ -947,8 +1132,8 @@ class GitSSHAutomationApp(ctk.CTk):
             profile_row, values=[self.tr("clone_no_profiles_option")], width=250, command=self.on_clone_profile_selected,
         )
         self.clone_profile_menu.pack(side="left", padx=(0, 5))
-        refresh_clone_btn = ctk.CTkButton(profile_row, text="🔄", width=32, command=self.refresh_clone_profiles)
-        refresh_clone_btn.pack(side="left")
+        self.clone_refresh_btn = ctk.CTkButton(profile_row, text="🔄", width=32, command=self.refresh_clone_profiles)
+        self.clone_refresh_btn.pack(side="left")
 
         url_lbl = ctk.CTkLabel(container, text=self.tr("clone_url_label"))
         url_lbl.grid(row=2, column=0, columnspan=2, sticky="w", padx=15, pady=(15, 0))
@@ -960,12 +1145,142 @@ class GitSSHAutomationApp(ctk.CTk):
         self.clone_status_lbl = ctk.CTkLabel(container, text=self.tr("clone_status_initial"), justify="left", anchor="w", wraplength=480)
         self.clone_status_lbl.grid(row=4, column=0, columnspan=2, sticky="w", padx=15, pady=(10, 15))
 
+        # Live progress (hidden until a clone starts)
+        self.clone_progress_frame = ctk.CTkFrame(container, fg_color="transparent")
+        self.clone_progress_frame.grid(row=5, column=0, columnspan=2, sticky="we", padx=15, pady=(0, 5))
+        self.clone_progress_frame.grid_remove()
+
+        self.clone_progress_bar = ctk.CTkProgressBar(self.clone_progress_frame, width=480)
+        self.clone_progress_bar.set(0)
+        self.clone_progress_bar.pack(fill="x", pady=(0, 5))
+
+        self.clone_phase_lbl = ctk.CTkLabel(
+            self.clone_progress_frame, text="", justify="left", anchor="w",
+            wraplength=480, font=ctk.CTkFont(size=UI.SIZE_BODY),
+        )
+        self.clone_phase_lbl.pack(fill="x")
+
         self.clone_btn = ctk.CTkButton(container, text=self.tr("clone_btn"), state="disabled", command=self.do_clone_repo)
-        self.clone_btn.grid(row=5, column=0, columnspan=2, pady=10)
+        self.clone_btn.grid(row=6, column=0, columnspan=2, pady=10)
+
+        self._build_clone_result_card(container)
 
         self.refresh_clone_profiles()
 
+    def _build_clone_result_card(self, container):
+        """Persistent result panel: what used to be a messagebox that vanished on OK.
+        Success keeps the path on screen with follow-up actions; failure keeps a
+        friendly explanation plus the raw stderr behind a toggle."""
+        self.clone_result_card = ctk.CTkFrame(container, border_width=1, fg_color="transparent")
+        self.clone_result_card.grid(row=7, column=0, columnspan=2, sticky="we", padx=15, pady=(0, 15))
+        self.clone_result_card.grid_remove()
+
+        self.clone_result_title = ctk.CTkLabel(
+            self.clone_result_card, text="", anchor="w", font=ctk.CTkFont(size=UI.SIZE_SECTION, weight="bold"),
+        )
+        self.clone_result_title.pack(fill="x", padx=12, pady=(10, 2))
+
+        self.clone_result_msg = ctk.CTkLabel(
+            self.clone_result_card, text="", justify="left", anchor="w", wraplength=460,
+        )
+        self.clone_result_msg.pack(fill="x", padx=12, pady=(0, 8))
+
+        # Success actions
+        self.clone_ok_actions = ctk.CTkFrame(self.clone_result_card, fg_color="transparent")
+        self.clone_open_btn = ctk.CTkButton(
+            self.clone_ok_actions, text=self.tr("clone_open_folder_btn"), width=140,
+            command=lambda: self._open_in_file_manager(self._clone_dest),
+        )
+        self.clone_open_btn.pack(side="left", padx=(0, 5))
+        self.clone_copy_path_btn = ctk.CTkButton(
+            self.clone_ok_actions, text=self.tr("clone_copy_path_btn"), width=130, command=self._copy_clone_path,
+        )
+        self.clone_copy_path_btn.pack(side="left", padx=(0, 5))
+        self.clone_another_btn = ctk.CTkButton(
+            self.clone_ok_actions, text=self.tr("clone_another_btn"), width=130,
+            fg_color=UI.NEUTRAL_BTN, command=self._reset_clone_form,
+        )
+        self.clone_another_btn.pack(side="left")
+
+        # Error details (collapsed by default)
+        self.clone_details_btn = ctk.CTkButton(
+            self.clone_result_card, text=self.tr("clone_details_show_btn"), width=180,
+            fg_color="transparent", border_width=1, command=self._toggle_clone_details,
+        )
+        self.clone_details_box = ctk.CTkTextbox(self.clone_result_card, height=110, wrap="word")
+        self._clone_details_open = False
+        self._clone_details_text = ""
+
+    def _hide_clone_result(self):
+        self.clone_result_card.grid_remove()
+        self.clone_ok_actions.pack_forget()
+        self.clone_details_btn.pack_forget()
+        self.clone_details_box.pack_forget()
+        self._clone_details_open = False
+
+    def _show_clone_result(self, kind, title, message, details=""):
+        """kind: 'ok' | 'error' | 'cancel'"""
+        colors = {"ok": UI.SUCCESS, "error": UI.ERROR, "cancel": UI.WARNING}
+        color = colors[kind]
+
+        self._hide_clone_result()
+        self.clone_result_card.configure(border_color=color)
+        self.clone_result_title.configure(text=title, text_color=color)
+        self.clone_result_msg.configure(text=message)
+
+        if kind == "ok":
+            self.clone_ok_actions.pack(fill="x", padx=12, pady=(0, 12))
+        elif details:
+            self._clone_details_text = details
+            self.clone_details_btn.configure(text=self.tr("clone_details_show_btn"))
+            self.clone_details_btn.pack(anchor="w", padx=12, pady=(0, 12))
+
+        self.clone_result_card.grid()
+
+    def _toggle_clone_details(self):
+        if self._clone_details_open:
+            self.clone_details_box.pack_forget()
+            self.clone_details_btn.configure(text=self.tr("clone_details_show_btn"))
+            self._clone_details_open = False
+            return
+
+        self.clone_details_box.configure(state="normal")
+        self.clone_details_box.delete("0.0", "end")
+        self.clone_details_box.insert("0.0", self._clone_details_text)
+        self.clone_details_box.configure(state="disabled")
+        self.clone_details_box.pack(fill="x", padx=12, pady=(0, 12))
+        self.clone_details_btn.configure(text=self.tr("clone_details_hide_btn"))
+        self._clone_details_open = True
+
+    def _copy_clone_path(self):
+        self.clipboard_clear()
+        self.clipboard_append(self._clone_dest)
+        self.log(self.tr("clone_path_copied"))
+
+    def _reset_clone_form(self):
+        self.clone_url_entry.delete(0, "end")
+        self._hide_clone_result()
+        self.validate_clone_form()
+        self.clone_url_entry.focus_set()
+
+    def _open_in_file_manager(self, path):
+        if not path or not os.path.isdir(path):
+            return
+        try:
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            elif os.name == "nt":
+                os.startfile(path)  # noqa: S606  (Windows-only API, no shell involved)
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except OSError as e:
+            self.log(self.tr("log_open_folder_error", e=str(e)))
+
     def refresh_clone_profiles(self):
+        # A clone in flight owns the tab's widget states; don't fight it.
+        if self._clone_busy:
+            return
+
         profiles = self.parse_profiles()
         self._clone_profiles = {p["id"]: p for p in profiles}
 
@@ -1020,6 +1335,15 @@ class GitSSHAutomationApp(ctk.CTk):
         return f"{parsed['user']}@{alias_host}:{parsed['path']}"
 
     @staticmethod
+    def repo_name_from_path(path):
+        """Folder name git will create: last path segment without the '.git' suffix."""
+        segments = [s for s in path.strip("/").split("/") if s]
+        if not segments:
+            return ""
+        name = segments[-1]
+        return name[:-4] if name.lower().endswith(".git") else name
+
+    @staticmethod
     def extract_repo_organization(path):
         """Get the organization/owner segment from a repo path.
         Azure DevOps paths look like 'v3/Organization/Project/Repo'; every other
@@ -1032,7 +1356,9 @@ class GitSSHAutomationApp(ctk.CTk):
         return segments[0]
 
     def _set_clone_status(self, text, ok):
-        self.clone_status_lbl.configure(text=text, text_color="#2e7d32" if ok else "#a83232")
+        # Tuple colors so the status stays readable in both light and dark mode.
+        color = UI.SUCCESS if ok else UI.ERROR
+        self.clone_status_lbl.configure(text=text, text_color=color)
         self.clone_btn.configure(state="normal" if ok else "disabled")
 
     def find_matching_profile_for_url(self, url):
@@ -1051,6 +1377,9 @@ class GitSSHAutomationApp(ctk.CTk):
         return None
 
     def validate_clone_form(self):
+        if self._clone_busy:
+            return
+
         url = self.clone_url_entry.get().strip()
 
         # Try to auto-select matching profile if URL is valid
@@ -1095,12 +1424,71 @@ class GitSSHAutomationApp(ctk.CTk):
             self._set_clone_status(self.tr("clone_status_org_mismatch", org=org, id=profile_id), ok=False)
             return
 
+        repo_name = self.repo_name_from_path(parsed["path"])
         self._set_clone_status(
-            self.tr("clone_status_ok", alias=profile["ssh_host"], dir=profile["target_dir"]),
+            self.tr(
+                "clone_status_ok",
+                alias=profile["ssh_host"],
+                dest=os.path.join(profile["target_dir"], repo_name),
+            ),
             ok=True,
         )
 
+    # ------------------------------------------------------------------
+    # Clone execution (worker thread + queue polled from the UI thread)
+    # ------------------------------------------------------------------
+
+    # Git writes progress to stderr, updating in place with '\r'. LC_ALL=C keeps
+    # these phase names in English so they stay parseable on localized systems.
+    CLONE_PROGRESS_RE = re.compile(
+        r"^(Counting objects|Compressing objects|Receiving objects|Resolving deltas|Updating files):\s+(\d+)%(.*)$"
+    )
+    CLONE_PHASE_KEYS = {
+        "Counting objects": "clone_phase_counting",
+        "Compressing objects": "clone_phase_compressing",
+        "Receiving objects": "clone_phase_receiving",
+        "Resolving deltas": "clone_phase_resolving",
+        "Updating files": "clone_phase_checkout",
+    }
+    # Ordered: the first match wins, so specific causes beat generic ones.
+    CLONE_ERROR_HINTS = (
+        (("permission denied (publickey)", "permission denied", "authentication failed"), "clone_err_publickey"),
+        (("host key verification failed", "remote host identification has changed"), "clone_err_host_key"),
+        (("could not resolve hostname", "connection timed out", "connection refused",
+          "network is unreachable", "operation timed out"), "clone_err_network"),
+        (("already exists and is not an empty directory",), "clone_err_dest_exists_git"),
+        (("repository not found", "does not exist", "no such repository",
+          "does not appear to be a git repository", "not found",
+          "access denied", "you do not have permission"), "clone_err_repo_not_found"),
+    )
+
+    def _clone_preflight(self, profile, dest_dir):
+        """Cheap local checks so the common failures are explained before git runs.
+        Returns a ready-to-show error message, or None when everything looks fine."""
+        if shutil.which("git") is None:
+            return self.tr("clone_err_no_git")
+
+        key_path = profile.get("ssh_key_path") or ""
+        if key_path and not os.path.isfile(os.path.expanduser(key_path)):
+            return self.tr("clone_err_key_missing", path=key_path)
+
+        target_dir = profile["target_dir"]
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+        except OSError:
+            return self.tr("clone_err_dir_not_writable", dir=target_dir)
+        if not os.access(target_dir, os.W_OK):
+            return self.tr("clone_err_dir_not_writable", dir=target_dir)
+
+        if os.path.exists(dest_dir):
+            return self.tr("clone_err_dest_exists", dest=dest_dir)
+
+        return None
+
     def do_clone_repo(self):
+        if self._clone_busy:
+            return
+
         profile_id = self.clone_profile_menu.get()
         profile = self._clone_profiles.get(profile_id)
         url = self.clone_url_entry.get().strip()
@@ -1116,40 +1504,242 @@ class GitSSHAutomationApp(ctk.CTk):
             self.validate_clone_form()
             return
 
+        repo_name = self.repo_name_from_path(parsed["path"])
+        dest_dir = os.path.join(profile["target_dir"], repo_name)
+
+        problem = self._clone_preflight(profile, dest_dir)
+        if problem:
+            self.log(self.tr("log_clone_error", e=problem))
+            self._show_clone_result("error", self.tr("clone_result_err_title"), problem)
+            return
+
         aliased_url = self.build_aliased_clone_url(parsed, profile["ssh_host"])
 
-        try:
-            os.makedirs(profile["target_dir"], exist_ok=True)
-            self.log(self.tr("log_clone_start", dir=profile["target_dir"], id=profile_id))
-            self.log(self.tr("log_clone_cmd", url=aliased_url))
+        self._hide_clone_result()
+        self.log(self.tr("log_clone_start", dir=profile["target_dir"], id=profile_id))
+        self.log(self.tr("log_clone_cmd", url=aliased_url))
 
+        self._clone_dest = dest_dir
+        self._clone_queue = queue.Queue()
+        self._clone_cancel_requested = False
+        self._set_clone_busy(True, repo_name=repo_name, host=parsed["host"])
+
+        self._clone_thread = threading.Thread(
+            target=self._clone_worker,
+            args=(aliased_url, profile["target_dir"], self._clone_queue),
+            daemon=True,
+        )
+        self._clone_thread.start()
+        self.after(100, self._poll_clone_queue)
+
+    def _set_clone_busy(self, busy, repo_name="", host=""):
+        self._clone_busy = busy
+
+        entry_state = "disabled" if busy else "normal"
+        self.clone_url_entry.configure(state=entry_state)
+        self.clone_profile_menu.configure(state=entry_state)
+        self.clone_refresh_btn.configure(state=entry_state)
+
+        if busy:
+            self.clone_btn.configure(text=self.tr("clone_btn_cancel"), state="normal", command=self.cancel_clone)
+            self._set_clone_status_busy(repo_name)
+            self.clone_progress_frame.grid()
+            self.clone_phase_lbl.configure(text=self.tr("clone_phase_starting", host=host))
+            self._start_clone_indeterminate()
+        else:
+            self.clone_btn.configure(text=self.tr("clone_btn"), command=self.do_clone_repo)
+            self._stop_clone_indeterminate()
+            self.clone_progress_frame.grid_remove()
+            self.validate_clone_form()
+
+    def _set_clone_status_busy(self, repo_name):
+        self.clone_status_lbl.configure(
+            text=self.tr("clone_status_busy", repo=repo_name),
+            text_color=("gray20", "gray80"),
+        )
+
+    def _start_clone_indeterminate(self):
+        # No percentage exists until git starts transferring, so pulse instead of lying with 0%.
+        self.clone_progress_bar.configure(mode="indeterminate")
+        self.clone_progress_bar.start()
+        self._clone_indeterminate = True
+
+    def _stop_clone_indeterminate(self):
+        if self._clone_indeterminate:
+            self.clone_progress_bar.stop()
+            self.clone_progress_bar.configure(mode="determinate")
+            self._clone_indeterminate = False
+        self.clone_progress_bar.set(0)
+
+    @staticmethod
+    def _iter_git_progress(stream):
+        """Yield git's stderr in '\\r'/'\\n'-delimited chunks. Reading by line would
+        buffer the whole progress meter into one blob that only arrives at the end."""
+        buf = []
+        while True:
+            ch = stream.read(1)
+            if not ch:
+                break
+            if ch in ("\r", "\n"):
+                chunk = "".join(buf).strip()
+                buf = []
+                if chunk:
+                    yield chunk
+            else:
+                buf.append(ch)
+        tail = "".join(buf).strip()
+        if tail:
+            yield tail
+
+    def _clone_worker(self, aliased_url, cwd, q):
+        """Runs off the UI thread: only touches the queue, never a widget."""
+        try:
             clone_env = os.environ.copy()
             # accept-new: acepta llaves de hosts nuevos sin prompt interactivo
             # (la app no tiene terminal), pero sigue rechazando llaves cambiadas.
             clone_env["GIT_SSH_COMMAND"] = "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
-            result = subprocess.run(
-                ["git", "clone", aliased_url],
-                cwd=profile["target_dir"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                env=clone_env,
+            clone_env["GIT_TERMINAL_PROMPT"] = "0"
+            clone_env["LC_ALL"] = "C"
+
+            proc = subprocess.Popen(
+                ["git", "clone", "--progress", aliased_url],
+                cwd=cwd,
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                text=True, env=clone_env,
             )
-            if result.returncode != 0:
-                raise RuntimeError(result.stderr.strip() or self.tr("git_clone_failed"))
+            self._clone_proc = proc
+            # Cancel may have landed in the gap between Popen and this assignment.
+            if self._clone_cancel_requested:
+                proc.terminate()
 
-            self.log(self.tr("log_clone_ok", dir=profile["target_dir"]))
-            messagebox.showinfo(self.tr("clone_done_title"), self.tr("clone_done_msg", dir=profile["target_dir"]))
-            self.clone_url_entry.delete(0, "end")
-            self.validate_clone_form()
+            captured = []
+            for chunk in self._iter_git_progress(proc.stderr):
+                captured.append(chunk)
+                q.put(("progress", chunk))
+            proc.wait()
 
-        except Exception as e:
-            self.log(self.tr("log_clone_error", e=str(e)))
-            messagebox.showerror(self.tr("clone_error_title"), self.tr("clone_error_msg", e=str(e)))
+            if self._clone_cancel_requested:
+                q.put(("cancelled", None))
+            elif proc.returncode != 0:
+                q.put(("error", "\n".join(captured).strip() or self.tr("git_clone_failed")))
+            else:
+                q.put(("done", None))
+        except Exception as e:  # noqa: BLE001 - anything here must reach the UI, not die silently
+            q.put(("error", str(e)))
+        finally:
+            self._clone_proc = None
+
+    def _poll_clone_queue(self):
+        q = self._clone_queue
+        if q is None:
+            return
+
+        try:
+            while True:
+                kind, payload = q.get_nowait()
+                if kind == "progress":
+                    self._on_clone_progress(payload)
+                elif kind == "done":
+                    self._on_clone_done()
+                    return
+                elif kind == "cancelled":
+                    self._on_clone_cancelled()
+                    return
+                elif kind == "error":
+                    self._on_clone_error(payload)
+                    return
+        except queue.Empty:
+            pass
+
+        self.after(100, self._poll_clone_queue)
+
+    def _on_clone_progress(self, chunk):
+        m = self.CLONE_PROGRESS_RE.match(chunk)
+        if not m:
+            # Non-progress chatter ("Cloning into...", "remote: ...") belongs in the console.
+            self.log(chunk)
+            return
+
+        phase, pct_text, rest = m.group(1), m.group(2), m.group(3)
+        pct = int(pct_text)
+
+        if self._clone_indeterminate:
+            self._stop_clone_indeterminate()
+        self.clone_progress_bar.set(pct / 100)
+
+        # "Receiving objects: 16% (62/383), 3.29 MiB | 831.00 KiB/s" -> keep the rate.
+        extra = ""
+        if phase == "Receiving objects" and "," in rest:
+            rate = rest.split(",", 1)[1].strip().removesuffix(", done.").strip()
+            extra = f" · {rate}" if rate else ""
+
+        self.clone_phase_lbl.configure(
+            text=self.tr(self.CLONE_PHASE_KEYS[phase], pct=pct, extra=extra)
+        )
+
+    def _on_clone_done(self):
+        self._clone_queue = None
+        self._set_clone_busy(False)
+        self.log(self.tr("log_clone_ok", dir=self._clone_dest))
+        self._show_clone_result("ok", self.tr("clone_result_ok_title"), self._clone_dest)
+        self.clone_url_entry.delete(0, "end")
+        self.validate_clone_form()
+
+    def _on_clone_cancelled(self):
+        self._clone_queue = None
+        self._set_clone_busy(False)
+        self.log(self.tr("log_clone_cancelled"))
+
+        # Pre-flight guaranteed this folder didn't exist, so a partial one is ours to remove.
+        if self._clone_dest and os.path.isdir(self._clone_dest):
+            shutil.rmtree(self._clone_dest, ignore_errors=True)
+            self.log(self.tr("log_clone_partial_removed", dest=self._clone_dest))
+
+        self._show_clone_result(
+            "cancel", self.tr("clone_result_cancel_title"), self.tr("clone_result_cancel_msg"),
+        )
+
+    def _on_clone_error(self, stderr_text):
+        self._clone_queue = None
+        self._set_clone_busy(False)
+        self.log(self.tr("log_clone_error", e=stderr_text.replace("\n", " | ")))
+
+        # git may have left a half-written folder behind; it would block the retry.
+        if self._clone_dest and os.path.isdir(self._clone_dest):
+            shutil.rmtree(self._clone_dest, ignore_errors=True)
+
+        self._show_clone_result(
+            "error", self.tr("clone_result_err_title"),
+            self._friendly_clone_error(stderr_text), details=stderr_text,
+        )
+
+    def _friendly_clone_error(self, stderr_text):
+        lowered = stderr_text.lower()
+        for needles, key in self.CLONE_ERROR_HINTS:
+            if any(n in lowered for n in needles):
+                return self.tr(key)
+        return self.tr("clone_err_unknown")
+
+    def cancel_clone(self):
+        if not self._clone_busy:
+            return
+
+        self._clone_cancel_requested = True
+        self.clone_phase_lbl.configure(text=self.tr("clone_phase_cancelling"))
+        self.clone_btn.configure(state="disabled")
+
+        proc = self._clone_proc
+        if proc is not None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
 
     def create_list_tab(self, parent):
         header = ctk.CTkFrame(parent, fg_color="transparent")
         header.pack(fill="x", padx=5, pady=(5, 0))
 
-        list_lbl = ctk.CTkLabel(header, text=self.tr("list_title"), font=ctk.CTkFont(size=14, weight="bold"))
+        list_lbl = ctk.CTkLabel(header, text=self.tr("list_title"), font=ctk.CTkFont(size=UI.SIZE_SECTION, weight="bold"))
         list_lbl.pack(side="left", padx=10, pady=10)
 
         refresh_btn = ctk.CTkButton(header, text=self.tr("refresh_btn"), width=100, command=self.refresh_profile_list)
@@ -1249,7 +1839,7 @@ class GitSSHAutomationApp(ctk.CTk):
         frame = ctk.CTkFrame(dialog)
         frame.pack(fill="both", expand=True, padx=15, pady=15)
 
-        title_lbl = ctk.CTkLabel(frame, text=self.tr("confirm_review_title"), font=ctk.CTkFont(size=15, weight="bold"), wraplength=420, justify="left")
+        title_lbl = ctk.CTkLabel(frame, text=self.tr("confirm_review_title"), font=ctk.CTkFont(size=UI.SIZE_LG, weight="bold"), wraplength=420, justify="left")
         title_lbl.pack(anchor="w", pady=(0, 10))
 
         gen_ssh_text = f"{self.tr('yes')} ({ssh_key_type.upper()})" if gen_ssh else self.tr("no")
@@ -1269,7 +1859,7 @@ class GitSSHAutomationApp(ctk.CTk):
         hint_lbl = ctk.CTkLabel(
             frame,
             text=self.tr("confirm_hint"),
-            text_color="gray", justify="left", anchor="w", wraplength=420,
+            text_color=UI.MUTED, justify="left", anchor="w", wraplength=420,
         )
         hint_lbl.pack(anchor="w", pady=(0, 15))
 
@@ -1280,7 +1870,7 @@ class GitSSHAutomationApp(ctk.CTk):
         confirm_btn = ctk.CTkButton(frame, text=self.tr("confirm_save_btn"), command=confirm_create)
         confirm_btn.pack(pady=(5, 5))
 
-        cancel_btn = ctk.CTkButton(frame, text=self.tr("cancel_btn"), fg_color="gray", command=dialog.destroy)
+        cancel_btn = ctk.CTkButton(frame, text=self.tr("cancel_btn"), fg_color=UI.NEUTRAL_BTN, command=dialog.destroy)
         cancel_btn.pack(pady=5)
 
     def _ssh_keygen_cmd(self, key_type, key_path, email):
@@ -1593,10 +2183,10 @@ class GitSSHAutomationApp(ctk.CTk):
             if deleted:
                 messagebox.showinfo(self.tr("orphan_done_title"), self.tr("orphan_done_msg", n=deleted))
 
-        confirm_btn = ctk.CTkButton(frame, text=self.tr("orphan_confirm_btn"), fg_color="#a83232", hover_color="#802424", command=confirm_delete)
+        confirm_btn = ctk.CTkButton(frame, text=self.tr("orphan_confirm_btn"), fg_color=UI.DANGER_BG, hover_color=UI.DANGER_HOVER, command=confirm_delete)
         confirm_btn.pack(pady=(5, 5))
 
-        cancel_btn = ctk.CTkButton(frame, text=self.tr("cancel_btn"), fg_color="gray", command=dialog.destroy)
+        cancel_btn = ctk.CTkButton(frame, text=self.tr("cancel_btn"), fg_color=UI.NEUTRAL_BTN, command=dialog.destroy)
         cancel_btn.pack(pady=5)
 
     def refresh_profile_list(self):
@@ -1643,12 +2233,12 @@ class GitSSHAutomationApp(ctk.CTk):
 
         provider_emoji = self._get_provider_emoji(profile["real_host"])
         profile_title = f"{provider_emoji} {profile['id'].upper()}"
-        title_lbl = ctk.CTkLabel(top_bar, text=profile_title, font=ctk.CTkFont(size=13, weight="bold"))
+        title_lbl = ctk.CTkLabel(top_bar, text=profile_title, font=ctk.CTkFont(size=UI.SIZE_LABEL_SM, weight="bold"))
         title_lbl.pack(side="left", padx=(8, 4), pady=8)
 
         # Status badge
         ssh_status = "✅" if profile.get("ssh_key_path") else "⚠️"
-        status_lbl = ctk.CTkLabel(top_bar, text=ssh_status, font=ctk.CTkFont(size=11))
+        status_lbl = ctk.CTkLabel(top_bar, text=ssh_status, font=ctk.CTkFont(size=UI.SIZE_HELP))
         status_lbl.pack(side="right", padx=8, pady=8)
 
         # Details section
@@ -1661,7 +2251,7 @@ class GitSSHAutomationApp(ctk.CTk):
             text=details_text,
             justify="left",
             anchor="w",
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(size=UI.SIZE_HELP),
         )
         details_lbl.pack(anchor="w", padx=12, pady=(0, 6))
 
@@ -1671,8 +2261,8 @@ class GitSSHAutomationApp(ctk.CTk):
             text=f"📁  {profile['target_dir']}",
             justify="left",
             anchor="w",
-            text_color="gray",
-            font=ctk.CTkFont(size=10),
+            text_color=UI.MUTED,
+            font=ctk.CTkFont(size=UI.SIZE_HELP),
             wraplength=400,
         )
         folder_lbl.pack(anchor="w", padx=12, pady=(0, 6))
@@ -1685,8 +2275,8 @@ class GitSSHAutomationApp(ctk.CTk):
                 text=ssh_text,
                 justify="left",
                 anchor="w",
-                text_color="gray",
-                font=ctk.CTkFont(size=10),
+                text_color=UI.MUTED,
+                font=ctk.CTkFont(size=UI.SIZE_HELP),
                 wraplength=400,
             )
             ssh_lbl.pack(anchor="w", padx=12, pady=(0, 6))
@@ -1699,7 +2289,7 @@ class GitSSHAutomationApp(ctk.CTk):
             button_frame,
             text=self.tr("edit_row_btn"),
             width=110,
-            font=ctk.CTkFont(size=10),
+            font=ctk.CTkFont(size=UI.SIZE_HELP),
             command=lambda p=profile: self.open_edit_dialog(p),
         )
         edit_btn.pack(side="left", padx=(0, 6))
@@ -1708,9 +2298,9 @@ class GitSSHAutomationApp(ctk.CTk):
             button_frame,
             text=self.tr("delete_row_btn"),
             width=110,
-            font=ctk.CTkFont(size=10),
-            fg_color="#a83232",
-            hover_color="#802424",
+            font=ctk.CTkFont(size=UI.SIZE_HELP),
+            fg_color=UI.DANGER_BG,
+            hover_color=UI.DANGER_HOVER,
             command=lambda p=profile: self.open_delete_dialog(p),
         )
         delete_btn.pack(side="left")
@@ -1726,10 +2316,10 @@ class GitSSHAutomationApp(ctk.CTk):
         form = ctk.CTkFrame(dialog)
         form.pack(fill="both", expand=True, padx=15, pady=15)
 
-        id_lbl = ctk.CTkLabel(form, text=self.tr("edit_profile_label", id=profile['id']), font=ctk.CTkFont(size=15, weight="bold"))
+        id_lbl = ctk.CTkLabel(form, text=self.tr("edit_profile_label", id=profile['id']), font=ctk.CTkFont(size=UI.SIZE_LG, weight="bold"))
         id_lbl.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
 
-        dir_lbl = ctk.CTkLabel(form, text=self.tr("edit_folder_label", dir=profile['target_dir']), text_color="gray")
+        dir_lbl = ctk.CTkLabel(form, text=self.tr("edit_folder_label", dir=profile['target_dir']), text_color=UI.MUTED)
         dir_lbl.grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 15))
 
         ctk.CTkLabel(form, text=self.tr("edit_name_label")).grid(row=2, column=0, columnspan=2, sticky="w", pady=(5, 0))
@@ -1764,13 +2354,13 @@ class GitSSHAutomationApp(ctk.CTk):
         key_type_menu.grid(row=11, column=0, sticky="w", pady=5)
 
         rotate_btn = ctk.CTkButton(
-            form, text=self.tr("edit_rotate_key_btn"), width=220, fg_color="#7a5c00", hover_color="#5c4500",
+            form, text=self.tr("edit_rotate_key_btn"), width=220, fg_color=UI.CAUTION_BG, hover_color=UI.CAUTION_HOVER,
             command=lambda: self.rotate_ssh_key(profile, key_type_var.get(), dialog),
         )
         rotate_btn.grid(row=11, column=1, sticky="e", pady=5)
 
         rotate_hint_lbl = ctk.CTkLabel(
-            form, text=self.tr("edit_rotate_hint"), text_color="gray", justify="left", anchor="w", wraplength=420,
+            form, text=self.tr("edit_rotate_hint"), text_color=UI.MUTED, justify="left", anchor="w", wraplength=420,
         )
         rotate_hint_lbl.grid(row=12, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
@@ -1801,7 +2391,7 @@ class GitSSHAutomationApp(ctk.CTk):
         save_btn = ctk.CTkButton(form, text=self.tr("edit_save_btn"), command=save_changes)
         save_btn.grid(row=13, column=0, columnspan=2, pady=(20, 5))
 
-        cancel_btn = ctk.CTkButton(form, text=self.tr("cancel_btn"), fg_color="gray", command=dialog.destroy)
+        cancel_btn = ctk.CTkButton(form, text=self.tr("cancel_btn"), fg_color=UI.NEUTRAL_BTN, command=dialog.destroy)
         cancel_btn.grid(row=14, column=0, columnspan=2, pady=5)
 
     def save_profile_edit(self, profile, new_name, new_email, new_ssh_host, new_real_host):
@@ -1939,7 +2529,7 @@ class GitSSHAutomationApp(ctk.CTk):
         warn_lbl = ctk.CTkLabel(
             frame,
             text=self.tr("delete_warn", id=profile['id']),
-            font=ctk.CTkFont(size=15, weight="bold"),
+            font=ctk.CTkFont(size=UI.SIZE_LG, weight="bold"),
             wraplength=400,
             justify="left",
         )
@@ -1954,7 +2544,7 @@ class GitSSHAutomationApp(ctk.CTk):
         keep_lbl = ctk.CTkLabel(
             frame,
             text=self.tr("delete_keep_folder", dir=profile['target_dir']),
-            text_color="gray", justify="left", anchor="w", wraplength=400,
+            text_color=UI.MUTED, justify="left", anchor="w", wraplength=400,
         )
         keep_lbl.pack(anchor="w", pady=(0, 15))
 
@@ -1977,10 +2567,10 @@ class GitSSHAutomationApp(ctk.CTk):
             self.refresh_profile_list()
             messagebox.showinfo(self.tr("delete_done_title"), self.tr("delete_done_msg", id=profile['id']))
 
-        delete_btn = ctk.CTkButton(frame, text=self.tr("delete_confirm_btn"), fg_color="#a83232", hover_color="#802424", command=confirm_delete)
+        delete_btn = ctk.CTkButton(frame, text=self.tr("delete_confirm_btn"), fg_color=UI.DANGER_BG, hover_color=UI.DANGER_HOVER, command=confirm_delete)
         delete_btn.pack(pady=(5, 5))
 
-        cancel_btn = ctk.CTkButton(frame, text=self.tr("cancel_btn"), fg_color="gray", command=dialog.destroy)
+        cancel_btn = ctk.CTkButton(frame, text=self.tr("cancel_btn"), fg_color=UI.NEUTRAL_BTN, command=dialog.destroy)
         cancel_btn.pack(pady=5)
 
     def delete_profile(self, profile, delete_ssh_key=False):
@@ -2056,7 +2646,7 @@ class GitSSHAutomationApp(ctk.CTk):
         copier.transient(self)
         copier.grab_set()
 
-        lbl = ctk.CTkLabel(copier, text=self.tr("copier_header"), font=ctk.CTkFont(size=18, weight="bold"))
+        lbl = ctk.CTkLabel(copier, text=self.tr("copier_header"), font=ctk.CTkFont(size=UI.SIZE_XL, weight="bold"))
         lbl.pack(pady=(15, 5))
 
         clone_template = self.PROVIDER_CLONE_EXAMPLES.get(provider, self.DEFAULT_CLONE_EXAMPLE)
@@ -2079,7 +2669,7 @@ class GitSSHAutomationApp(ctk.CTk):
         copy_btn.pack(pady=(0, 10))
 
         # Personalized guide: clone, push/pull and connection testing for this profile/provider
-        guide_lbl = ctk.CTkLabel(copier, text=self.tr("copier_guide_label"), font=ctk.CTkFont(size=14, weight="bold"))
+        guide_lbl = ctk.CTkLabel(copier, text=self.tr("copier_guide_label"), font=ctk.CTkFont(size=UI.SIZE_SECTION, weight="bold"))
         guide_lbl.pack(padx=20, pady=(5, 0), anchor="w")
 
         guide_text = self.build_usage_guide(provider, host, real_host, profile, folder, clone_example)
@@ -2088,7 +2678,7 @@ class GitSSHAutomationApp(ctk.CTk):
         guide_box.insert("0.0", guide_text)
         guide_box.configure(state="disabled")
 
-        close_btn = ctk.CTkButton(copier, text=self.tr("copier_close_btn"), fg_color="gray", command=copier.destroy)
+        close_btn = ctk.CTkButton(copier, text=self.tr("copier_close_btn"), fg_color=UI.NEUTRAL_BTN, command=copier.destroy)
         close_btn.pack(pady=(0, 10))
 
 
