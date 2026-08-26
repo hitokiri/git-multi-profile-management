@@ -1893,6 +1893,14 @@ class GitSSHAutomationApp(ctk.CTk):
         prefix = content.split(" ", 1)[0] if content else ""
         return self.SSH_KEY_TYPE_BY_PREFIX.get(prefix, "")
 
+    @staticmethod
+    def _to_gitconfig_path(path):
+        """Git config values use backslash as an escape character, so an
+        unescaped Windows path (C:\\Users\\...) written as a bare value
+        makes git fail with 'bad config line N'. Forward slashes are safe
+        on every platform (including Windows), so normalize to those."""
+        return path.replace("\\", "/")
+
     def create_profile(self, profile_id, git_name, git_email, ssh_host, real_host, target_dir, provider, gen_ssh, ssh_key_type="ed25519"):
         sub_gitconfig = os.path.expanduser(f"~/.gitconfig-{profile_id}")
         ssh_key_prefix = f"id_{ssh_key_type}_" if ssh_key_type != "rsa" else "id_rsa_"
@@ -1907,7 +1915,9 @@ class GitSSHAutomationApp(ctk.CTk):
             self.log(self.tr("log_folder_ready", target_dir=target_dir))
 
             # B. Create the sub-gitconfig file
-            with open(sub_gitconfig, "w", encoding="utf-8") as f:
+            # newline="" forces plain LF line endings on every platform, matching
+            # git's own convention and avoiding CRLF/LF mixing with the appends below
+            with open(sub_gitconfig, "w", encoding="utf-8", newline="") as f:
                 f.write(f"[user]\n\tname = {git_name}\n\temail = {git_email}\n")
             self.log(self.tr("log_gitconfig_written", path=sub_gitconfig))
 
@@ -1917,13 +1927,18 @@ class GitSSHAutomationApp(ctk.CTk):
                 with open(self.gitconfig_path, "r", encoding="utf-8") as f:
                     gitconfig_data = f.read()
 
-            include_block = f'\n[includeIf "gitdir:{target_dir}/"]\n\tpath = {sub_gitconfig}\n'
+            # Backslashes are git-config escape characters, so raw Windows paths
+            # (e.g. C:\Users\...) must be forward-slashed before being written as
+            # config values, otherwise git fails with "bad config line N"
+            cfg_target_dir = self._to_gitconfig_path(target_dir)
+            cfg_sub_gitconfig = self._to_gitconfig_path(sub_gitconfig)
+            include_block = f'\n[includeIf "gitdir:{cfg_target_dir}/"]\n\tpath = {cfg_sub_gitconfig}\n'
 
             # Use trailing slash check to match safely
-            if f"gitdir:{target_dir}/" in gitconfig_data:
+            if f"gitdir:{cfg_target_dir}/" in gitconfig_data:
                 self.log(self.tr("log_already_mapped"))
             else:
-                with open(self.gitconfig_path, "a", encoding="utf-8") as f:
+                with open(self.gitconfig_path, "a", encoding="utf-8", newline="") as f:
                     f.write(include_block)
                 self.log(self.tr("log_include_added"))
 
@@ -2395,8 +2410,8 @@ class GitSSHAutomationApp(ctk.CTk):
         cancel_btn.grid(row=14, column=0, columnspan=2, pady=5)
 
     def save_profile_edit(self, profile, new_name, new_email, new_ssh_host, new_real_host):
-        # Update the sub-gitconfig (name/email)
-        with open(profile["gitconfig_path"], "w", encoding="utf-8") as f:
+        # Update the sub-gitconfig (name/email); newline="" keeps plain LF endings
+        with open(profile["gitconfig_path"], "w", encoding="utf-8", newline="") as f:
             f.write(f"[user]\n\tname = {new_name}\n\temail = {new_email}\n")
         self.log(self.tr("log_edit_git_updated", id=profile['id'], path=profile['gitconfig_path']))
 
@@ -2590,7 +2605,9 @@ class GitSSHAutomationApp(ctk.CTk):
             )
             new_gitconfig_data, count = re.subn(include_pattern, "\n", gitconfig_data, count=1)
             if count:
-                with open(self.gitconfig_path, "w", encoding="utf-8") as f:
+                # newline="" keeps plain LF endings (gitconfig_data was read with
+                # universal newlines, so it's already normalized to \n here)
+                with open(self.gitconfig_path, "w", encoding="utf-8", newline="") as f:
                     f.write(new_gitconfig_data)
                 self.log(self.tr("log_del_includeif_removed", id=profile['id']))
             else:
