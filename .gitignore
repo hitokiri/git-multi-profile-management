@@ -12,3 +12,17 @@ dist/
 .wine-build/
 .build-cache/
 .idea
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+graft/
+
+# AI/dev-tool config and personal artifacts — not part of the project itself
+.claude/
+.mcp.json
+.ignore
+AGENTS.md
+EVALUACION.md
+Modelfile
+Modelfile_q4
+opencode.json
+.github/copilot-instructions.md
