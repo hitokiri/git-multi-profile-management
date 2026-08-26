@@ -197,6 +197,8 @@ I18N = {
         "edit_rotate_confirm_title": "Confirmar rotación de llave",
         "edit_rotate_confirm_msg": "¿Rotar la llave SSH del perfil '{id}' a tipo {type}?\n\nLa llave actual quedará inválida hasta que agregues la nueva clave pública en tu proveedor Git.",
         "edit_rotate_error_msg": "No se pudo rotar la llave SSH:\n{e}",
+        "edit_copy_pubkey_btn": "📋 Copiar Llave Pública",
+        "edit_copy_pubkey_error_msg": "No se pudo leer la llave pública:\n{e}",
         "edit_rotate_ssh_block_not_found": "no se encontró el bloque SSH esperado en ~/.ssh/config",
         "edit_rotate_done_title": "Llave rotada",
         "edit_rotate_done_msg": "La llave SSH del perfil '{id}' fue rotada correctamente. Copia la nueva clave pública y agrégala en tu proveedor Git.",
@@ -205,6 +207,7 @@ I18N = {
         "log_edit_git_updated": "Perfil '{id}': datos de Git actualizados en {path}.",
         "log_edit_ssh_updated": "Perfil '{id}': mapeo SSH actualizado ({host} → {real_host}).",
         "log_edit_ssh_not_found": "Perfil '{id}': no se encontró el bloque SSH esperado en ~/.ssh/config, no se modificó.",
+        "log_edit_pubkey_copied": "Perfil '{id}': llave pública SSH copiada al portapapeles.",
 
         # rotate_ssh_key logs
         "log_rotate_error": "ERROR AL ROTAR LA LLAVE DEL PERFIL '{id}': {e}",
@@ -499,6 +502,8 @@ I18N = {
         "edit_rotate_confirm_title": "Confirm key rotation",
         "edit_rotate_confirm_msg": "Rotate the SSH key for profile '{id}' to type {type}?\n\nThe current key will become invalid until you add the new public key to your Git provider.",
         "edit_rotate_error_msg": "Could not rotate the SSH key:\n{e}",
+        "edit_copy_pubkey_btn": "📋 Copy Public Key",
+        "edit_copy_pubkey_error_msg": "Could not read the public key:\n{e}",
         "edit_rotate_ssh_block_not_found": "expected SSH block not found in ~/.ssh/config",
         "edit_rotate_done_title": "Key rotated",
         "edit_rotate_done_msg": "The SSH key for profile '{id}' was rotated successfully. Copy the new public key and add it to your Git provider.",
@@ -507,6 +512,7 @@ I18N = {
         "log_edit_git_updated": "Profile '{id}': Git data updated in {path}.",
         "log_edit_ssh_updated": "Profile '{id}': SSH mapping updated ({host} → {real_host}).",
         "log_edit_ssh_not_found": "Profile '{id}': expected SSH block not found in ~/.ssh/config, nothing changed.",
+        "log_edit_pubkey_copied": "Profile '{id}': SSH public key copied to clipboard.",
 
         # rotate_ssh_key logs
         "log_rotate_error": "ERROR ROTATING KEY FOR PROFILE '{id}': {e}",
@@ -2323,7 +2329,7 @@ class GitSSHAutomationApp(ctk.CTk):
     def open_edit_dialog(self, profile):
         dialog = ctk.CTkToplevel(self)
         dialog.title(self.tr("edit_dialog_title", id=profile['id']))
-        dialog.geometry("480x680")
+        dialog.geometry("480x730")
         dialog.resizable(False, False)
         dialog.transient(self)
         dialog.grab_set()
@@ -2383,6 +2389,25 @@ class GitSSHAutomationApp(ctk.CTk):
             key_type_menu.configure(state="disabled")
             rotate_btn.configure(state="disabled")
 
+        def copy_pub_key():
+            pub_key_path = f"{profile['ssh_key_path']}.pub"
+            try:
+                with open(pub_key_path, "r", encoding="utf-8") as f:
+                    pub_key = f.read().strip()
+            except OSError as e:
+                messagebox.showerror(self.tr("error_title"), self.tr("edit_copy_pubkey_error_msg", e=str(e)), parent=dialog)
+                return
+            self.clipboard_clear()
+            self.clipboard_append(pub_key)
+            self.log(self.tr("log_edit_pubkey_copied", id=profile['id']))
+            messagebox.showinfo(self.tr("copier_copied_title"), self.tr("copier_copied_msg"), parent=dialog)
+
+        copy_pubkey_btn = ctk.CTkButton(form, text=self.tr("edit_copy_pubkey_btn"), command=copy_pub_key)
+        copy_pubkey_btn.grid(row=13, column=0, columnspan=2, pady=(0, 10))
+
+        if not profile["ssh_key_path"]:
+            copy_pubkey_btn.configure(state="disabled")
+
         def save_changes():
             new_name = name_entry.get().strip()
             new_email = email_entry.get().strip()
@@ -2404,10 +2429,10 @@ class GitSSHAutomationApp(ctk.CTk):
             messagebox.showinfo(self.tr("edit_updated_title"), self.tr("edit_updated_msg", id=profile['id']))
 
         save_btn = ctk.CTkButton(form, text=self.tr("edit_save_btn"), command=save_changes)
-        save_btn.grid(row=13, column=0, columnspan=2, pady=(20, 5))
+        save_btn.grid(row=14, column=0, columnspan=2, pady=(20, 5))
 
         cancel_btn = ctk.CTkButton(form, text=self.tr("cancel_btn"), fg_color=UI.NEUTRAL_BTN, command=dialog.destroy)
-        cancel_btn.grid(row=14, column=0, columnspan=2, pady=5)
+        cancel_btn.grid(row=15, column=0, columnspan=2, pady=5)
 
     def save_profile_edit(self, profile, new_name, new_email, new_ssh_host, new_real_host):
         # Update the sub-gitconfig (name/email); newline="" keeps plain LF endings
