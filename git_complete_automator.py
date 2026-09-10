@@ -136,6 +136,7 @@ I18N = {
         "log_gitconfig_written": "Configuración Git local escrita en {path}",
         "log_already_mapped": "El perfil ya se encuentra mapeado en tu ~/.gitconfig global.",
         "log_include_added": "Se agregó la redirección 'includeIf' a tu ~/.gitconfig global.",
+        "log_gitconfig_repaired": "Se repararon {count} entrada(s) 'includeIf' con barras invertidas en tu ~/.gitconfig (git fallaba con 'bad config line').",
         "log_ssh_key_skip": "La llave SSH {name} ya existe. Saltando generación para no sobreescribir.",
         "log_ssh_generating": "Generando nueva llave SSH {type} para {email}...",
         "log_ssh_created": "Llave SSH creada en: {path}",
@@ -441,6 +442,7 @@ I18N = {
         "log_gitconfig_written": "Local Git config written to {path}",
         "log_already_mapped": "This profile is already mapped in your global ~/.gitconfig.",
         "log_include_added": "'includeIf' redirect added to your global ~/.gitconfig.",
+        "log_gitconfig_repaired": "Repaired {count} 'includeIf' entry(ies) with backslashes in your ~/.gitconfig (git was failing with 'bad config line').",
         "log_ssh_key_skip": "SSH key {name} already exists. Skipping generation to avoid overwriting it.",
         "log_ssh_generating": "Generating new {type} SSH key for {email}...",
         "log_ssh_created": "SSH key created at: {path}",
@@ -933,6 +935,9 @@ class GitSSHAutomationApp(ctk.CTk):
         self.log_box.pack(padx=20, pady=(5, 15))
         self.log_box.insert("0.0", f"{self.tr('console_ready')}\n")
         self.log_box.configure(state="disabled")
+        for text in getattr(self, "_pending_log", []):
+            self.log(text)
+        self._pending_log = []
 
     def create_form_tab(self, parent):
         # Main Container
@@ -1767,6 +1772,11 @@ class GitSSHAutomationApp(ctk.CTk):
             self.refresh_clone_profiles()
 
     def log(self, text):
+        # The first profile refresh runs while the tabs are still being built,
+        # before the console exists; keep those lines and flush them once it does.
+        if not hasattr(self, "log_box"):
+            self._pending_log = getattr(self, "_pending_log", []) + [text]
+            return
         self.log_box.configure(state="normal")
         self.log_box.insert("end", f">> {text}\n")
         self.log_box.see("end")
@@ -1907,6 +1917,46 @@ class GitSSHAutomationApp(ctk.CTk):
         on every platform (including Windows), so normalize to those."""
         return path.replace("\\", "/")
 
+    # Matches the includeIf blocks this app writes; groups 1/3 are the literal
+    # prefixes so only the gitdir and path VALUES get rewritten.
+    _INCLUDE_IF_RE = re.compile(
+        r'(\[includeIf[ \t]+"gitdir:)([^"\r\n]+)("\][ \t]*\r?\n[ \t]*path[ \t]*=[ \t]*)([^\r\n]+)'
+    )
+
+    def _repair_gitconfig_paths(self):
+        """Entries written by versions before 1.1.0 on Windows contain raw
+        backslashes (e.g. path = C:\\Users\\me/.gitconfig-x). Git reads '\\U' as
+        an invalid escape and aborts with 'bad config line N', so the whole
+        global config is unusable until they are fixed. Rewrite only those
+        values with forward slashes; anything else in the file is untouched."""
+        if not os.path.exists(self.gitconfig_path):
+            return 0
+
+        with open(self.gitconfig_path, "r", encoding="utf-8", newline="") as f:
+            data = f.read()
+
+        repaired = 0
+
+        def fix(m):
+            nonlocal repaired
+            gitdir, path = m.group(2), m.group(4)
+            if "\\" not in gitdir and "\\" not in path:
+                return m.group(0)
+            repaired += 1
+            return (
+                f"{m.group(1)}{self._to_gitconfig_path(gitdir)}"
+                f"{m.group(3)}{self._to_gitconfig_path(path)}"
+            )
+
+        new_data = self._INCLUDE_IF_RE.sub(fix, data)
+        if repaired:
+            # newline="" writes the content verbatim (keeps whatever line
+            # endings the file already had, no CRLF translation on Windows)
+            with open(self.gitconfig_path, "w", encoding="utf-8", newline="") as f:
+                f.write(new_data)
+            self.log(self.tr("log_gitconfig_repaired", count=repaired))
+        return repaired
+
     def create_profile(self, profile_id, git_name, git_email, ssh_host, real_host, target_dir, provider, gen_ssh, ssh_key_type="ed25519"):
         sub_gitconfig = os.path.expanduser(f"~/.gitconfig-{profile_id}")
         ssh_key_prefix = f"id_{ssh_key_type}_" if ssh_key_type != "rsa" else "id_rsa_"
@@ -2011,6 +2061,10 @@ class GitSSHAutomationApp(ctk.CTk):
     def parse_profiles(self):
         """Scan ~/.gitconfig, ~/.gitconfig-<id> and ~/.ssh/config to build the list of configured profiles."""
         profiles = {}
+
+        # Heal entries left behind by older Windows builds before reading them,
+        # so the list below (and git itself) sees valid forward-slash paths.
+        self._repair_gitconfig_paths()
 
         if os.path.exists(self.gitconfig_path):
             with open(self.gitconfig_path, "r", encoding="utf-8") as f:
