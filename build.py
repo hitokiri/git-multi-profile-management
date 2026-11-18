@@ -9,6 +9,7 @@ Usage:
     pip install -r requirements-dev.txt
     python3 build.py
 """
+import os
 import platform
 import shutil
 import subprocess
@@ -58,7 +59,12 @@ def _bump_local_version(version_file):
 
 
 def get_version(root):
-    return _git_tag_version(root) or _bump_local_version(root / "VERSION")
+    version = _git_tag_version(root)
+    if version is None:
+        return _bump_local_version(root / "VERSION")
+    # VERSION is bundled into the app (see --add-data below), which reads it at runtime.
+    (root / "VERSION").write_text(version + "\n")
+    return version
 
 
 def main():
@@ -94,8 +100,17 @@ def main():
         # customtkinter ships its own theme JSON files and fonts as package data;
         # PyInstaller won't pick those up automatically without this.
         "--collect-all", "customtkinter",
-        str(entry),
+        # Read at runtime: VERSION for the app's own version, icons for the window icon.
+        "--add-data", f"{root / 'VERSION'}{os.pathsep}.",
+        "--add-data", f"{root / 'assets' / 'icon.png'}{os.pathsep}assets",
+        "--add-data", f"{root / 'assets' / 'icon.ico'}{os.pathsep}assets",
     ]
+    # Executable/bundle icon; Linux binaries have no embedded icon (the window icon covers it).
+    if system == "Windows":
+        cmd += ["--icon", str(root / "assets" / "icon.ico")]
+    elif system == "Darwin":
+        cmd += ["--icon", str(root / "assets" / "icon.icns")]
+    cmd.append(str(entry))
     subprocess.run(cmd, check=True, cwd=root)
     _cleanup_build_artifacts(root)
 
