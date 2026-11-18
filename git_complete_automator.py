@@ -9,7 +9,7 @@ import shutil
 import threading
 import subprocess
 import customtkinter as ctk
-from tkinter import messagebox, filedialog, simpledialog
+from tkinter import messagebox, filedialog, simpledialog, PhotoImage, TclError
 
 # Visual setup
 ctk.set_appearance_mode("System")
@@ -18,6 +18,193 @@ ctk.set_default_color_theme("blue")
 THEME_FILE = os.path.expanduser("~/.git_multiprofile_theme")
 LANG_FILE = os.path.expanduser("~/.git_multiprofile_lang")
 GITHUB_COM = "github.com"
+
+# PyInstaller unpacks bundled data files under sys._MEIPASS; from source they sit next to this file.
+RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+
+
+def _read_app_version():
+    try:
+        with open(os.path.join(RESOURCE_DIR, "VERSION"), encoding="utf-8") as f:
+            return f.read().strip() or "dev"
+    except OSError:
+        return "dev"
+
+
+APP_VERSION = _read_app_version()
+
+
+# ----------------------------------------------------------------------
+# Secret scanning (gitleaks): the app installs/updates the gitleaks binary in
+# its own data folder and points each protected profile's core.hooksPath at a
+# hook folder it manages. Scanning is 100% local; the network is only used to
+# download/update the gitleaks binary itself from its official GitHub release.
+# ----------------------------------------------------------------------
+
+GITLEAKS_REPO_API = "https://api.github.com/repos/gitleaks/gitleaks/releases/latest"
+
+# Client-side hooks that git would otherwise stop running from .git/hooks once
+# core.hooksPath points elsewhere (git-lfs, for example, installs several of these).
+CHAINED_HOOKS = (
+    "applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit",
+    "prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase", "post-checkout",
+    "post-merge", "pre-push", "pre-auto-gc", "post-rewrite", "reference-transaction",
+)
+
+
+def app_data_dir():
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/AppData/Local")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return os.path.join(base, "GitMultiProfileSSH")
+
+
+def gitleaks_paths():
+    root = os.path.join(app_data_dir(), "gitleaks")
+    exe = "gitleaks.exe" if sys.platform == "win32" else "gitleaks"
+    return {
+        "root": root,
+        "bin": os.path.join(root, exe),
+        "version": os.path.join(root, "VERSION"),
+        "hooks": os.path.join(root, "hooks"),
+    }
+
+
+def gitleaks_asset_name(version, system=None, machine=None):
+    """Release asset for this OS/CPU, e.g. 'gitleaks_8.30.1_linux_x64.tar.gz'; None if unsupported."""
+    import platform
+    system = system or sys.platform
+    machine = (machine or platform.machine()).lower()
+    os_name = "windows" if system == "win32" else "darwin" if system == "darwin" else "linux" if system.startswith("linux") else None
+    arch = {"x86_64": "x64", "amd64": "x64", "arm64": "arm64", "aarch64": "arm64"}.get(machine)
+    if not os_name or not arch:
+        return None
+    ext = "zip" if os_name == "windows" else "tar.gz"
+    return f"gitleaks_{version}_{os_name}_{arch}.{ext}"
+
+
+def installed_gitleaks_version():
+    paths = gitleaks_paths()
+    if not os.path.isfile(paths["bin"]):
+        return None
+    try:
+        with open(paths["version"], encoding="utf-8") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+def _hook_chain_snippet(name):
+    # --git-common-dir is the real .git folder (also from a worktree), unaffected by core.hooksPath.
+    return (
+        f'repo_hook="$(git rev-parse --git-common-dir)/hooks/{name}"\n'
+        'if [ -x "$repo_hook" ]; then exec "$repo_hook" "$@"; fi\n'
+        "exit 0\n"
+    )
+
+
+def build_hook_scripts(gitleaks_bin):
+    """{hook name: script}. pre-commit runs gitleaks then chains to the repo's own hook; the rest only chain."""
+    header = "#!/bin/sh\n# Managed by Git Multi-Profile & SSH Automator; rewritten on every app start.\n"
+    bin_path = gitleaks_bin.replace("\\", "/")
+    pre_commit = header + (
+        f'GITLEAKS="{bin_path}"\n'
+        'if [ -x "$GITLEAKS" ]; then\n'
+        '    if ! "$GITLEAKS" git --pre-commit --staged --redact --no-banner --verbose; then\n'
+        '        echo "" >&2\n'
+        '        echo "[Git Multi-Profile] Commit blocked: gitleaks found a possible secret (see above)." >&2\n'
+        '        echo "  Remove it from the staged files. If it is a false positive: git commit --no-verify" >&2\n'
+        "        exit 1\n"
+        "    fi\n"
+        "else\n"
+        '    echo "[Git Multi-Profile] gitleaks is not installed yet; secret scan skipped." >&2\n'
+        "fi\n"
+    ) + _hook_chain_snippet("pre-commit")
+    scripts = {name: header + _hook_chain_snippet(name) for name in CHAINED_HOOKS}
+    scripts["pre-commit"] = pre_commit
+    return scripts
+
+
+def write_hook_scripts():
+    paths = gitleaks_paths()
+    os.makedirs(paths["hooks"], exist_ok=True)
+    for name, body in build_hook_scripts(paths["bin"]).items():
+        hook = os.path.join(paths["hooks"], name)
+        with open(hook, "w", encoding="utf-8", newline="\n") as f:
+            f.write(body)
+        os.chmod(hook, 0o755)
+
+
+def _extract_gitleaks_binary(archive_path, exe, dest):
+    """Copies only the `exe` file out of the release archive into dest (no path from the archive is trusted)."""
+    import tarfile
+    import zipfile
+    if archive_path.endswith(".zip"):
+        with zipfile.ZipFile(archive_path) as z:
+            member = next(n for n in z.namelist() if os.path.basename(n) == exe)
+            with z.open(member) as src, open(dest, "wb") as out:
+                shutil.copyfileobj(src, out)
+    else:
+        with tarfile.open(archive_path, "r:gz") as t:
+            member = next(m for m in t.getmembers() if m.isfile() and os.path.basename(m.name) == exe)
+            with t.extractfile(member) as src, open(dest, "wb") as out:
+                shutil.copyfileobj(src, out)
+    os.chmod(dest, 0o755)
+
+
+def ensure_gitleaks(timeout=20):
+    """Installs or updates gitleaks if a newer release exists, and (re)writes the hook scripts.
+    Runs in a worker thread. Returns ("ok", version, change) with change None/"installed"/"updated",
+    or ("error", message, None); offline with a working install is still "ok" (it keeps protecting)."""
+    import hashlib
+    import urllib.request
+    paths = gitleaks_paths()
+    os.makedirs(paths["root"], exist_ok=True)
+    write_hook_scripts()
+    installed = installed_gitleaks_version()
+    try:
+        req = urllib.request.Request(GITLEAKS_REPO_API, headers={"Accept": "application/vnd.github+json", "User-Agent": "GitMultiProfileSSH"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            release = json.load(r)
+        latest = release["tag_name"].lstrip("v")
+        if latest == installed:
+            return ("ok", installed, None)
+        name = gitleaks_asset_name(latest)
+        asset = next((a for a in release["assets"] if a["name"] == name), None)
+        if asset is None:
+            raise RuntimeError(f"no gitleaks build for this system ({name})")
+        expected = (asset.get("digest") or "").removeprefix("sha256:")
+        if not expected:
+            raise RuntimeError("release asset has no sha256 digest to verify")
+        archive = os.path.join(paths["root"], name + ".part")
+        try:
+            sha = hashlib.sha256()
+            with urllib.request.urlopen(asset["browser_download_url"], timeout=timeout) as r, open(archive, "wb") as out:
+                for chunk in iter(lambda: r.read(1 << 16), b""):
+                    sha.update(chunk)
+                    out.write(chunk)
+            if sha.hexdigest() != expected:
+                raise RuntimeError("downloaded gitleaks failed sha256 verification")
+            # Final archive name keeps the .zip/.tar.gz suffix the extractor dispatches on.
+            final_archive = os.path.join(paths["root"], name)
+            os.replace(archive, final_archive)
+            new_bin = paths["bin"] + ".new"
+            _extract_gitleaks_binary(final_archive, os.path.basename(paths["bin"]), new_bin)
+            os.replace(new_bin, paths["bin"])  # atomic swap: a commit running right now keeps the old binary
+            os.remove(final_archive)
+        finally:
+            if os.path.exists(archive):
+                os.remove(archive)
+        with open(paths["version"], "w", encoding="utf-8") as f:
+            f.write(latest)
+        return ("ok", latest, "updated" if installed else "installed")
+    except Exception as e:  # network down, API change, disk error...
+        if installed:
+            return ("ok", installed, None)
+        return ("error", str(e), None)
 
 
 class UI:
@@ -35,6 +222,9 @@ class UI:
     ERROR = ("#a83232", "#ef9a9a")
     WARNING = ("#8a6d00", "#e0c060")
     MUTED = ("gray35", "gray65")
+    # Backgrounds for the notice bar under the header
+    NOTICE_WARN_BG = ("#FFF4D6", "#3A3220")
+    NOTICE_OK_BG = ("#E3F5E6", "#1F3324")
 
     DANGER_BG = "#a83232"
     DANGER_HOVER = "#802424"
@@ -62,6 +252,12 @@ I18N = {
         "window_title": "Git Multi-Profile & SSH Automator",
         "header_title": "⚡ Git Multi-Profile & SSH Suite",
         "console_ready": "--- Consola del sistema lista para automatizar ---",
+        "console_hide": "▾ Ocultar consola",
+        "console_show": "▸ Mostrar consola",
+        "console_show_unread": "▸ Mostrar consola ({count} mensajes nuevos)",
+        "theme_light": "Claro",
+        "theme_dark": "Oscuro",
+        "theme_system": "Auto",
 
         "tab_create": "➕ Crear Perfil",
         "tab_list": "📋 Perfiles Configurados",
@@ -89,10 +285,8 @@ I18N = {
         "profile_id_label": "ID de Perfil (= nombre de la organización):",
         "profile_id_placeholder": "nombre-organizacion",
         "profile_id_help": (
-            "⚠️ Debe ser EXACTAMENTE el nombre de la organización/dueño del repo: en Azure DevOps es la palabra "
-            "después de 'v3/' en la URL SSH; en GitHub/GitLab/Bitbucket es el usuario u organización antes del "
-            "nombre del repo (ej. 'git@github.com:ESTO/repo.git'). Así, al clonar, se valida que el repo "
-            "pertenezca a esta organización y no se mezclan repos de otra empresa en la carpeta equivocada."
+            "Debe coincidir con el usuario u organización del repo: en 'git@github.com:ESTO/repo.git' es ESTO; "
+            "en Azure DevOps, la palabra después de 'v3/'. Así no se mezclan repos de distintas empresas."
         ),
         "git_name_label": "Nombre del Desarrollador (Git):",
         "git_name_placeholder": "Tu Nombre Completo",
@@ -105,8 +299,10 @@ I18N = {
         "real_host_placeholder": GITHUB_COM,
         "self_hosted_placeholder": "tu-dominio-self-hosted.com",
         "gen_ssh_checkbox": "Generar nueva llave SSH automáticamente",
-        "ssh_key_type_help_es": "💡 Ed25519: moderno y seguro (recomendado) • RSA: compatible en sistemas antiguos • ECDSA: alternativa intermedia",
-        "run_btn": "🔥 CONFIGURAR TODO AHORA",
+        "key_type_help": "Se elige según el proveedor: Ed25519 para GitHub/GitLab/Bitbucket, RSA para Azure DevOps.",
+        "advanced_show": "▸ Opciones avanzadas (alias SSH, host real, llave)",
+        "advanced_hide": "▾ Ocultar opciones avanzadas",
+        "run_btn": "Crear perfil y configurar",
 
         # Create confirmation dialog
         "confirm_dialog_title": "Confirmar creación de perfil",
@@ -119,6 +315,25 @@ I18N = {
         "summary_ssh_alias": "Host SSH (alias): {v}",
         "summary_real_provider": "Proveedor Real: {v}",
         "summary_gen_ssh": "Generar llave SSH nueva: {v}",
+        "secret_scan_included": "🛡 Incluye protección contra secretos (gitleaks): se bloquean commits con llaves o tokens.",
+        "summary_secret_scan": "Protección de secretos (gitleaks): incluida",
+        "log_secret_scan_on": "Protección de secretos activada: los commits en esta carpeta se revisan con gitleaks (local).",
+        "log_secret_scan_toggled_on": "Protección de secretos activada para '{id}'.",
+        "log_secret_scan_error": "No se pudo activar la protección de secretos: {e}",
+        "log_gitleaks_ready": "gitleaks {version} listo (protección de secretos, 100% local).",
+        "log_gitleaks_error": "gitleaks no disponible todavía ({e}). Los commits no se bloquean hasta que se instale; se reintenta al abrir la app.",
+        "gitleaks_badge_checking": "🛡 gitleaks…",
+        "gitleaks_badge_ok": "🛡 gitleaks {version}",
+        "gitleaks_badge_error": "🛡 sin gitleaks",
+        "card_secret_scan_on": "🛡  Protección de secretos: activa",
+        "card_secret_scan_missing": "🛡  Sin protección de secretos (perfil anterior)",
+        "card_secret_scan_enable": "Activar",
+        "secret_scan_notice": "🛡 {count} perfil(es) sin protección contra secretos. Sus repos pueden recibir commits con llaves o tokens.",
+        "secret_scan_enable_all": "Activar en todos",
+        "notice_gitleaks_installed": "🛡 Protección de secretos lista: se instaló gitleaks {version}. Los commits en tus perfiles se revisan en tu equipo.",
+        "notice_gitleaks_updated": "🛡 gitleaks se actualizó a la versión {version}.",
+        "notice_gitleaks_error": "⚠ No se pudo instalar gitleaks (¿sin internet?). Los commits NO se revisan hasta que se instale.",
+        "notice_retry": "Reintentar",
         "yes": "Sí",
         "no": "No",
         "confirm_hint": "Nada se ha guardado todavía. Si algo está mal, presiona Cancelar y corrige el formulario.",
@@ -150,6 +365,8 @@ I18N = {
         "list_title": "Perfiles detectados en ~/.gitconfig y ~/.ssh/config",
         "refresh_btn": "🔄 Refrescar",
         "list_empty": "No hay perfiles configurados todavía.",
+        "list_empty_hint": "Crea tu primer perfil: la app genera la llave SSH y configura Git por ti.\nDespués podrás clonar repos desde la pestaña 'Clonar Repo'.",
+        "list_empty_btn": "+ Crear primer perfil",
         "list_no_name": "Sin nombre",
         "list_no_email": "sin email",
         "list_ssh_host_line": "🔑 Host SSH: {host} → {real_host}",
@@ -368,6 +585,12 @@ I18N = {
         "window_title": "Git Multi-Profile & SSH Automator",
         "header_title": "⚡ Git Multi-Profile & SSH Suite",
         "console_ready": "--- System console ready to automate ---",
+        "console_hide": "▾ Hide console",
+        "console_show": "▸ Show console",
+        "console_show_unread": "▸ Show console ({count} new messages)",
+        "theme_light": "Light",
+        "theme_dark": "Dark",
+        "theme_system": "Auto",
 
         "tab_create": "➕ Create Profile",
         "tab_list": "📋 Configured Profiles",
@@ -395,10 +618,8 @@ I18N = {
         "profile_id_label": "Profile ID (= organization name):",
         "profile_id_placeholder": "organization-name",
         "profile_id_help": (
-            "⚠️ Must be EXACTLY the organization/owner name of the repo: on Azure DevOps it's the word "
-            "right after 'v3/' in the SSH URL; on GitHub/GitLab/Bitbucket it's the user or organization before "
-            "the repo name (e.g. 'git@github.com:THIS/repo.git'). This way, when cloning, the app checks that "
-            "the repo belongs to this organization so repos from another company don't end up in the wrong folder."
+            "Must match the repo's user or organization: in 'git@github.com:THIS/repo.git' it's THIS; "
+            "on Azure DevOps, the word after 'v3/'. This keeps repos from different companies apart."
         ),
         "git_name_label": "Developer Name (Git):",
         "git_name_placeholder": "Your Full Name",
@@ -411,8 +632,10 @@ I18N = {
         "real_host_placeholder": GITHUB_COM,
         "self_hosted_placeholder": "your-self-hosted-domain.com",
         "gen_ssh_checkbox": "Automatically generate a new SSH key",
-        "ssh_key_type_help_en": "💡 Ed25519: modern and secure (recommended) • RSA: compatible with older systems • ECDSA: intermediate alternative",
-        "run_btn": "🔥 SET UP EVERYTHING NOW",
+        "key_type_help": "Picked from the provider: Ed25519 for GitHub/GitLab/Bitbucket, RSA for Azure DevOps.",
+        "advanced_show": "▸ Advanced options (SSH alias, real host, key)",
+        "advanced_hide": "▾ Hide advanced options",
+        "run_btn": "Create profile & configure",
 
         # Create confirmation dialog
         "confirm_dialog_title": "Confirm profile creation",
@@ -425,6 +648,25 @@ I18N = {
         "summary_ssh_alias": "SSH Host (alias): {v}",
         "summary_real_provider": "Real Provider: {v}",
         "summary_gen_ssh": "Generate new SSH key: {v}",
+        "secret_scan_included": "🛡 Includes secret protection (gitleaks): commits with keys or tokens are blocked.",
+        "summary_secret_scan": "Secret protection (gitleaks): included",
+        "log_secret_scan_on": "Secret protection enabled: commits in this folder are checked with gitleaks (local).",
+        "log_secret_scan_toggled_on": "Secret protection enabled for '{id}'.",
+        "log_secret_scan_error": "Could not enable secret protection: {e}",
+        "log_gitleaks_ready": "gitleaks {version} ready (secret protection, 100% local).",
+        "log_gitleaks_error": "gitleaks not available yet ({e}). Commits aren't blocked until it's installed; retried when the app opens.",
+        "gitleaks_badge_checking": "🛡 gitleaks…",
+        "gitleaks_badge_ok": "🛡 gitleaks {version}",
+        "gitleaks_badge_error": "🛡 no gitleaks",
+        "card_secret_scan_on": "🛡  Secret protection: on",
+        "card_secret_scan_missing": "🛡  No secret protection (older profile)",
+        "card_secret_scan_enable": "Enable",
+        "secret_scan_notice": "🛡 {count} profile(s) without secret protection. Their repos can receive commits with keys or tokens.",
+        "secret_scan_enable_all": "Enable for all",
+        "notice_gitleaks_installed": "🛡 Secret protection ready: gitleaks {version} was installed. Commits in your profiles are checked on your machine.",
+        "notice_gitleaks_updated": "🛡 gitleaks was updated to version {version}.",
+        "notice_gitleaks_error": "⚠ Couldn't install gitleaks (no internet?). Commits are NOT checked until it's installed.",
+        "notice_retry": "Retry",
         "yes": "Yes",
         "no": "No",
         "confirm_hint": "Nothing has been saved yet. If something is wrong, press Cancel and fix the form.",
@@ -456,6 +698,8 @@ I18N = {
         "list_title": "Profiles detected in ~/.gitconfig and ~/.ssh/config",
         "refresh_btn": "🔄 Refresh",
         "list_empty": "No profiles configured yet.",
+        "list_empty_hint": "Create your first profile: the app generates the SSH key and sets up Git for you.\nThen you can clone repos from the 'Clone Repo' tab.",
+        "list_empty_btn": "+ Create first profile",
         "list_no_name": "No name",
         "list_no_email": "no email",
         "list_ssh_host_line": "🔑 SSH Host: {host} → {real_host}",
@@ -675,6 +919,7 @@ I18N = {
 
 class GitSSHAutomationApp(ctk.CTk):
     KEY_RELEASE_EVENT = "<KeyRelease>"
+    FORM_LABEL_COL = 300  # px; wide enough for the longest form label in either language
 
     GITHUB = "GitHub"
     GITLAB = "GitLab"
@@ -697,6 +942,8 @@ class GitSSHAutomationApp(ctk.CTk):
         # (see _size_window_to_content); this placeholder just avoids a flash
         # of the Tk default 1x1 geometry while everything is being built.
         self.geometry("720x850")
+        self._set_window_icon()
+        ctk.set_appearance_mode(self._load_theme())
 
         # Paths
         self.gitconfig_path = os.path.expanduser("~/.gitconfig")
@@ -710,12 +957,110 @@ class GitSSHAutomationApp(ctk.CTk):
 
         self.lang = self._load_language()
         self._build_provider_data()
+        self._gitleaks_status = None  # None = still checking; see ensure_gitleaks() for the tuple
+        self._dismissed_notices = set()  # notice keys closed with ✕ this session
         self.create_widgets()
         self._size_window_to_content()
+        self._start_gitleaks_check()
 
     # ------------------------------------------------------------------
-    # i18n
+    # Secret scanning (gitleaks)
     # ------------------------------------------------------------------
+
+    def _start_gitleaks_check(self):
+        q = queue.Queue()
+        threading.Thread(target=lambda: q.put(ensure_gitleaks()), daemon=True).start()
+
+        def poll():
+            try:
+                self._gitleaks_status = q.get_nowait()
+            except queue.Empty:
+                self.after(300, poll)
+                return
+            kind, detail = self._gitleaks_status[:2]
+            self.log(self.tr("log_gitleaks_ready", version=detail) if kind == "ok" else self.tr("log_gitleaks_error", e=detail))
+            self._render_gitleaks_badge()
+            self._render_notice()
+
+        self.after(300, poll)
+
+    def _retry_gitleaks(self):
+        self._dismissed_notices.discard("gitleaks_error")
+        self._gitleaks_status = None
+        self._render_gitleaks_badge()
+        self._render_notice()
+        self._start_gitleaks_check()
+
+    def _pick_notice(self):
+        """Most important pending notice as (key, background, text, (button text, command) or None), or None."""
+        status = self._gitleaks_status
+        if status and status[0] == "error":
+            return ("gitleaks_error", UI.NOTICE_WARN_BG, self.tr("notice_gitleaks_error"),
+                    (self.tr("notice_retry"), self._retry_gitleaks))
+        unprotected = [p for p in self.parse_profiles() if not p.get("secret_scan")]
+        if unprotected:
+            return ("unprotected", UI.NOTICE_WARN_BG, self.tr("secret_scan_notice", count=len(unprotected)),
+                    (self.tr("secret_scan_enable_all"), lambda: self.enable_secret_scan_for(unprotected)))
+        if status and status[0] == "ok" and status[2]:
+            return ("gitleaks_" + status[2], UI.NOTICE_OK_BG, self.tr("notice_gitleaks_" + status[2], version=status[1]), None)
+        return None
+
+    def _render_notice(self):
+        """Notice bar under the header: visible from every tab, so nothing important lives only in the console."""
+        bar = self.notice_bar
+        for w in bar.winfo_children():
+            w.destroy()
+        notice = self._pick_notice()
+        if notice and notice[0] in self._dismissed_notices:
+            notice = None
+        was_visible = bar.winfo_manager() != ""
+        if notice is None:
+            bar.pack_forget()
+        else:
+            key, bg, text, action = notice
+            bar.configure(fg_color=bg)
+            bar.pack(after=self.header, fill="x", padx=20, pady=(8, 0))
+            color = UI.SUCCESS if bg == UI.NOTICE_OK_BG else UI.WARNING
+            ctk.CTkButton(
+                bar, text="✕", width=28, height=28, fg_color="transparent", hover_color=UI.NEUTRAL_BTN,
+                text_color=color, command=lambda: (self._dismissed_notices.add(key), self._render_notice()),
+            ).pack(side="right", padx=(0, 6), pady=8)
+            if action:
+                ctk.CTkButton(bar, text=action[0], width=140, command=action[1]).pack(side="right", padx=6, pady=8)
+            ctk.CTkLabel(
+                bar, text=text, text_color=color, justify="left", anchor="w", wraplength=400,
+                font=ctk.CTkFont(size=UI.SIZE_HELP, weight="bold"),
+            ).pack(side="left", padx=12, pady=8)
+        if was_visible != (notice is not None):
+            self._size_window_to_content()
+
+    def _render_gitleaks_badge(self):
+        status = self._gitleaks_status
+        if status is None:
+            text, color = self.tr("gitleaks_badge_checking"), UI.MUTED
+        elif status[0] == "ok":
+            text, color = self.tr("gitleaks_badge_ok", version=status[1]), UI.SUCCESS
+        else:
+            text, color = self.tr("gitleaks_badge_error"), UI.WARNING
+        self.gitleaks_badge.configure(text=text, text_color=color)
+
+    def _enable_secret_scan(self, gitconfig_path):
+        """Points a profile's core.hooksPath at the app-managed hooks folder. Protection is mandatory,
+        so there is no 'disable'. git config --file edits only that key, keeping anything else in the file."""
+        cmd = ["git", "config", "--file", gitconfig_path, "core.hooksPath",
+               self._to_gitconfig_path(gitleaks_paths()["hooks"])]
+        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.strip() or f"git config exited {r.returncode}")
+
+    def enable_secret_scan_for(self, profiles):
+        for profile in profiles:
+            try:
+                self._enable_secret_scan(profile["gitconfig_path"])
+                self.log(self.tr("log_secret_scan_toggled_on", id=profile["id"]))
+            except (OSError, RuntimeError) as e:
+                self.log(self.tr("log_secret_scan_error", e=e))
+        self.refresh_profile_list()
 
     def tr(self, key, **kwargs):
         text = I18N.get(self.lang, I18N["es"]).get(key, key)
@@ -735,6 +1080,29 @@ class GitSSHAutomationApp(ctk.CTk):
         try:
             with open(LANG_FILE, "w", encoding="utf-8") as f:
                 f.write(lang)
+        except OSError:
+            pass
+
+    THEME_MODES = ("Light", "Dark", "System")
+
+    @classmethod
+    def _load_theme(cls):
+        try:
+            with open(THEME_FILE, "r", encoding="utf-8") as f:
+                mode = f.read().strip()
+            return mode if mode in cls.THEME_MODES else "System"
+        except OSError:
+            return "System"
+
+    def _theme_labels(self):
+        return dict(zip(self.THEME_MODES, (self.tr("theme_light"), self.tr("theme_dark"), self.tr("theme_system"))))
+
+    def on_theme_changed(self, label):
+        mode = {v: k for k, v in self._theme_labels().items()}.get(label, "System")
+        ctk.set_appearance_mode(mode)
+        try:
+            with open(THEME_FILE, "w", encoding="utf-8") as f:
+                f.write(mode)
         except OSError:
             pass
 
@@ -832,6 +1200,7 @@ class GitSSHAutomationApp(ctk.CTk):
             "provider": provider,
             "real_host": self.ssh_real_host_entry.get(),
             "gen_ssh": self.gen_ssh_var.get(),
+            "advanced": self._advanced_visible,
             "target_dir": self.selected_base_path.get(),
             "clone_profile": self.clone_profile_menu.get() if self._clone_profiles else None,
             "clone_url": self.clone_url_entry.get(),
@@ -859,6 +1228,7 @@ class GitSSHAutomationApp(ctk.CTk):
         self._last_ssh_host_suggestion = state["ssh_host"]
 
         self.gen_ssh_var.set(state["gen_ssh"])
+        self._set_advanced_visible(state["advanced"])
         self.selected_base_path.set(state["target_dir"])
 
         self.clone_url_entry.configure(state="normal")
@@ -896,26 +1266,53 @@ class GitSSHAutomationApp(ctk.CTk):
         logic fragile. Simplicity wins for this app.
         """
         self.update_idletasks()
-        w, h = max(720, self.winfo_reqwidth()), self.winfo_reqheight()
+        # Width is decided once; later re-measures (notice bar, console, advanced options) only change
+        # the height, otherwise the width would jump depending on which tab happens to be open.
+        self._window_width = getattr(self, "_window_width", None) or max(720, self.winfo_reqwidth())
+        w, h = self._window_width, self.winfo_reqheight()
         self.geometry(f"{w}x{h}")
         self.resizable(False, False)
 
+    def _set_window_icon(self):
+        try:
+            if sys.platform == "win32":
+                # CustomTkinter replaces any iconphoto() with its own icon on Windows; iconbitmap() is the override it respects.
+                self.iconbitmap(os.path.join(RESOURCE_DIR, "assets", "icon.ico"))
+            else:
+                # Keep a reference: Tk drops the image (and the icon) once the PhotoImage is garbage-collected.
+                self._icon_image = PhotoImage(file=os.path.join(RESOURCE_DIR, "assets", "icon.png"))
+                self.iconphoto(True, self._icon_image)
+        except TclError:
+            pass  # Missing/unreadable icon is cosmetic; keep the default one.
+
     def create_widgets(self):
-        self.title(self.tr("window_title"))
+        self.title(f"{self.tr('window_title')} v{APP_VERSION}")
         self.TAB_CREATE = self.tr("tab_create")
         self.TAB_LIST = self.tr("tab_list")
         self.TAB_CLONE = self.tr("tab_clone")
 
         # Header: title + language switcher
-        header = ctk.CTkFrame(self, fg_color="transparent")
+        header = self.header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=20, pady=(15, 0))
+        # Packed/unpacked by _render_notice(); created now so refresh_profile_list() can update it.
+        self.notice_bar = ctk.CTkFrame(self, corner_radius=8)
 
         title_lbl = ctk.CTkLabel(header, text=self.tr("header_title"), font=ctk.CTkFont(size=UI.SIZE_HEADER, weight="bold"))
         title_lbl.pack(side="left")
+        version_lbl = ctk.CTkLabel(header, text=f"v{APP_VERSION}", text_color=UI.MUTED, font=ctk.CTkFont(size=UI.SIZE_HELP))
+        version_lbl.pack(side="left", padx=(8, 0), pady=(6, 0))
+        self.gitleaks_badge = ctk.CTkLabel(header, text="", font=ctk.CTkFont(size=UI.SIZE_HELP))
+        self.gitleaks_badge.pack(side="left", padx=(10, 0), pady=(6, 0))
+        self._render_gitleaks_badge()
 
         self.lang_switch = ctk.CTkSegmentedButton(header, values=["ES", "EN"], width=100, command=self.on_language_changed)
         self.lang_switch.set(self.lang.upper())
         self.lang_switch.pack(side="right")
+
+        theme_labels = self._theme_labels()
+        self.theme_switch = ctk.CTkSegmentedButton(header, values=list(theme_labels.values()), command=self.on_theme_changed)
+        self.theme_switch.set(theme_labels[self._load_theme()])
+        self.theme_switch.pack(side="right", padx=(0, 10))
 
         # Tabs: creation form, profile list/management, then cloning (last, needs an existing profile)
         self.tabview = ctk.CTkTabview(self, command=self.on_tab_change)
@@ -930,14 +1327,39 @@ class GitSSHAutomationApp(ctk.CTk):
         self.create_clone_tab(tab_clone)
         self.create_list_tab(tab_list)
 
-        # CONSOLE LOG
-        self.log_box = ctk.CTkTextbox(self, height=170, width=640)
-        self.log_box.pack(padx=20, pady=(5, 15))
+        # CONSOLE LOG (collapsible; important events also reach the notice bar, so hiding it loses nothing)
+        self.console_toggle_btn = ctk.CTkButton(
+            self, text="", height=24, fg_color="transparent", hover_color=UI.NEUTRAL_BTN, text_color=UI.MUTED,
+            anchor="w", font=ctk.CTkFont(size=UI.SIZE_HELP), command=lambda: self._set_console_visible(not self._console_visible),
+        )
+        self.console_toggle_btn.pack(anchor="w", padx=20, pady=(4, 0))
+        self.log_box = ctk.CTkTextbox(self, height=140, width=640)
+        self.log_box.pack(padx=20, pady=(2, 15))
         self.log_box.insert("0.0", f"{self.tr('console_ready')}\n")
         self.log_box.configure(state="disabled")
         for text in getattr(self, "_pending_log", []):
             self.log(text)
         self._pending_log = []
+        self._set_console_visible(getattr(self, "_console_visible", True), force=True)
+        self._render_notice()
+
+    def _set_console_visible(self, visible, force=False):
+        if not force and visible == self._console_visible:
+            return
+        self._console_visible = visible
+        if visible:
+            self._console_unread = 0
+            self.log_box.pack(padx=20, pady=(2, 15))
+            self.console_toggle_btn.configure(text=self.tr("console_hide"))
+        else:
+            self.log_box.pack_forget()
+            self._update_console_toggle_text()
+        self._size_window_to_content()
+
+    def _update_console_toggle_text(self):
+        unread = getattr(self, "_console_unread", 0)
+        text = self.tr("console_show_unread", count=unread) if unread else self.tr("console_show")
+        self.console_toggle_btn.configure(text=text)
 
     def create_form_tab(self, parent):
         # Main Container
@@ -973,51 +1395,22 @@ class GitSSHAutomationApp(ctk.CTk):
         new_folder_btn.pack(side="left")
 
         # SECTION 2: Profile Info
+        # Same label-column width here and in the advanced frame, so both blocks line up.
+        container.grid_columnconfigure(0, minsize=self.FORM_LABEL_COL)
+
         sect2_lbl = ctk.CTkLabel(container, text=self.tr("section2_title"), font=ctk.CTkFont(size=UI.SIZE_SECTION, weight="bold"))
         sect2_lbl.grid(row=3, column=0, columnspan=3, sticky="w", padx=15, pady=(15, 5))
 
         sect2_help = ctk.CTkLabel(
             container,
             text=self.tr("section2_help"),
-            text_color=UI.MUTED, justify="left", anchor="w", wraplength=480, font=ctk.CTkFont(size=UI.SIZE_HELP)
+            text_color=UI.MUTED, justify="left", anchor="w", wraplength=560, font=ctk.CTkFont(size=UI.SIZE_HELP)
         )
         sect2_help.grid(row=4, column=0, columnspan=3, sticky="w", padx=15, pady=(0, 10))
 
-        # Profile ID
-        p_id_lbl = ctk.CTkLabel(container, text=self.tr("profile_id_label"))
-        p_id_lbl.grid(row=5, column=0, sticky="w", padx=15, pady=5)
-        self.profile_id_entry = ctk.CTkEntry(container, placeholder_text=self.tr("profile_id_placeholder"), width=250)
-        self.profile_id_entry.grid(row=5, column=1, columnspan=2, sticky="w", padx=15, pady=5)
-        self.profile_id_entry.bind(self.KEY_RELEASE_EVENT, self.update_ssh_host_suggestion)
-
-        p_id_help_lbl = ctk.CTkLabel(
-            container,
-            text=self.tr("profile_id_help"),
-            text_color=UI.MUTED, justify="left", anchor="w", wraplength=480, font=ctk.CTkFont(size=UI.SIZE_HELP),
-        )
-        p_id_help_lbl.grid(row=6, column=0, columnspan=3, sticky="w", padx=15, pady=(0, 5))
-
-        # Git Name
-        p_name_lbl = ctk.CTkLabel(container, text=self.tr("git_name_label"))
-        p_name_lbl.grid(row=7, column=0, sticky="w", padx=15, pady=5)
-        self.git_name_entry = ctk.CTkEntry(container, placeholder_text=self.tr("git_name_placeholder"), width=250)
-        self.git_name_entry.grid(row=7, column=1, columnspan=2, sticky="w", padx=15, pady=5)
-
-        # Git Email
-        p_email_lbl = ctk.CTkLabel(container, text=self.tr("git_email_label"))
-        p_email_lbl.grid(row=8, column=0, sticky="w", padx=15, pady=5)
-        self.git_email_entry = ctk.CTkEntry(container, placeholder_text=self.tr("git_email_placeholder"), width=250)
-        self.git_email_entry.grid(row=8, column=1, columnspan=2, sticky="w", padx=15, pady=5)
-
-        # Host SSH (custom mapping)
-        ssh_host_lbl = ctk.CTkLabel(container, text=self.tr("ssh_host_label"))
-        ssh_host_lbl.grid(row=9, column=0, sticky="w", padx=15, pady=5)
-        self.ssh_host_entry = ctk.CTkEntry(container, placeholder_text=self.tr("ssh_host_placeholder"), width=250)
-        self.ssh_host_entry.grid(row=9, column=1, columnspan=2, sticky="w", padx=15, pady=5)
-
-        # Provider preset selector
+        # Provider first: it drives the real host, the SSH alias and the key type below.
         provider_lbl = ctk.CTkLabel(container, text=self.tr("provider_label"))
-        provider_lbl.grid(row=10, column=0, sticky="w", padx=15, pady=5)
+        provider_lbl.grid(row=5, column=0, sticky="w", padx=15, pady=5)
         self.provider_menu = ctk.CTkOptionMenu(
             container,
             values=list(self.PROVIDER_HOSTS.keys()),
@@ -1025,60 +1418,116 @@ class GitSSHAutomationApp(ctk.CTk):
             command=self.on_provider_selected,
         )
         self.provider_menu.set(self.GITHUB)
-        self.provider_menu.grid(row=10, column=1, columnspan=2, sticky="w", padx=15, pady=5)
+        self.provider_menu.grid(row=5, column=1, columnspan=2, sticky="w", padx=15, pady=5)
+
+        # Profile ID
+        p_id_lbl = ctk.CTkLabel(container, text=self.tr("profile_id_label"))
+        p_id_lbl.grid(row=6, column=0, sticky="w", padx=15, pady=5)
+        self.profile_id_entry = ctk.CTkEntry(container, placeholder_text=self.tr("profile_id_placeholder"), width=250)
+        self.profile_id_entry.grid(row=6, column=1, columnspan=2, sticky="w", padx=15, pady=5)
+        self.profile_id_entry.bind(self.KEY_RELEASE_EVENT, self.update_ssh_host_suggestion)
+
+        p_id_help_lbl = ctk.CTkLabel(
+            container,
+            text=self.tr("profile_id_help"),
+            text_color=UI.MUTED, justify="left", anchor="w", wraplength=560, font=ctk.CTkFont(size=UI.SIZE_HELP),
+        )
+        p_id_help_lbl.grid(row=7, column=0, columnspan=3, sticky="w", padx=15, pady=(0, 5))
+
+        # Git Name
+        p_name_lbl = ctk.CTkLabel(container, text=self.tr("git_name_label"))
+        p_name_lbl.grid(row=8, column=0, sticky="w", padx=15, pady=5)
+        self.git_name_entry = ctk.CTkEntry(container, placeholder_text=self.tr("git_name_placeholder"), width=250)
+        self.git_name_entry.grid(row=8, column=1, columnspan=2, sticky="w", padx=15, pady=5)
+
+        # Git Email
+        p_email_lbl = ctk.CTkLabel(container, text=self.tr("git_email_label"))
+        p_email_lbl.grid(row=9, column=0, sticky="w", padx=15, pady=5)
+        self.git_email_entry = ctk.CTkEntry(container, placeholder_text=self.tr("git_email_placeholder"), width=250)
+        self.git_email_entry.grid(row=9, column=1, columnspan=2, sticky="w", padx=15, pady=5)
+
+        # Always on for new profiles (not optional), shown so the user knows it's there.
+        secret_scan_lbl = ctk.CTkLabel(
+            container, text=self.tr("secret_scan_included"), text_color=UI.SUCCESS,
+            justify="left", anchor="w", wraplength=560, font=ctk.CTkFont(size=UI.SIZE_HELP, weight="bold"),
+        )
+        secret_scan_lbl.grid(row=10, column=0, columnspan=3, sticky="w", padx=15, pady=(10, 0))
+
+        # ADVANCED (collapsed by default): the defaults derived from the provider are right for most people.
+        self.advanced_btn = ctk.CTkButton(
+            container, text=self.tr("advanced_show"), fg_color="transparent", hover_color=UI.NEUTRAL_BTN,
+            text_color=("gray20", "gray80"), anchor="w", command=lambda: self._set_advanced_visible(not self._advanced_visible),
+        )
+        self.advanced_btn.grid(row=11, column=0, columnspan=3, sticky="w", padx=10, pady=(10, 0))
+
+        self.advanced_frame = ctk.CTkFrame(container, fg_color="transparent")
+        self.advanced_frame.grid(row=12, column=0, columnspan=3, sticky="we")
+        self.advanced_frame.grid_columnconfigure(0, minsize=self.FORM_LABEL_COL)
+        adv = self.advanced_frame
+
+        # Host SSH (custom mapping)
+        ssh_host_lbl = ctk.CTkLabel(adv, text=self.tr("ssh_host_label"))
+        ssh_host_lbl.grid(row=0, column=0, sticky="w", padx=15, pady=5)
+        self.ssh_host_entry = ctk.CTkEntry(adv, placeholder_text=self.tr("ssh_host_placeholder"), width=250)
+        self.ssh_host_entry.grid(row=0, column=1, sticky="w", padx=15, pady=5)
 
         # True Host
-        ssh_real_host_lbl = ctk.CTkLabel(container, text=self.tr("real_host_label"))
-        ssh_real_host_lbl.grid(row=11, column=0, sticky="w", padx=15, pady=5)
-        self.ssh_real_host_entry = ctk.CTkEntry(container, placeholder_text=self.tr("real_host_placeholder"), width=250)
-        self.ssh_real_host_entry.grid(row=11, column=1, columnspan=2, sticky="w", padx=15, pady=5)
+        ssh_real_host_lbl = ctk.CTkLabel(adv, text=self.tr("real_host_label"))
+        ssh_real_host_lbl.grid(row=1, column=0, sticky="w", padx=15, pady=5)
+        self.ssh_real_host_entry = ctk.CTkEntry(adv, placeholder_text=self.tr("real_host_placeholder"), width=250)
+        self.ssh_real_host_entry.grid(row=1, column=1, sticky="w", padx=15, pady=5)
         self.ssh_real_host_entry.insert(0, self.PROVIDER_HOSTS[self.GITHUB])
         self.ssh_real_host_entry.bind(self.KEY_RELEASE_EVENT, self.update_ssh_host_suggestion)
 
         # Auto-gen SSH Checkbox
         self.gen_ssh_var = ctk.BooleanVar(value=True)
-        self.gen_ssh_chk = ctk.CTkCheckBox(container, text=self.tr("gen_ssh_checkbox"), variable=self.gen_ssh_var, command=self.update_key_type_visibility)
-        self.gen_ssh_chk.grid(row=12, column=0, columnspan=3, sticky="w", padx=15, pady=(10, 5))
+        self.gen_ssh_chk = ctk.CTkCheckBox(adv, text=self.tr("gen_ssh_checkbox"), variable=self.gen_ssh_var, command=self.update_key_type_visibility)
+        self.gen_ssh_chk.grid(row=2, column=0, columnspan=2, sticky="w", padx=15, pady=(10, 5))
 
-        # SSH Key Type (only visible when gen_ssh is checked)
-        ssh_key_type_lbl = ctk.CTkLabel(container, text=self.tr("edit_key_type_label"))
-        ssh_key_type_lbl.grid(row=13, column=0, sticky="w", padx=15, pady=(5, 0))
+        # SSH Key Type (disabled when gen_ssh is unchecked)
+        ssh_key_type_lbl = ctk.CTkLabel(adv, text=self.tr("edit_key_type_label"))
+        ssh_key_type_lbl.grid(row=3, column=0, sticky="w", padx=15, pady=(5, 0))
         self.ssh_key_type_var = ctk.StringVar(value="ed25519")
         self.ssh_key_type_menu = ctk.CTkOptionMenu(
-            container,
+            adv,
             values=self.SSH_KEY_TYPES,
             variable=self.ssh_key_type_var,
             width=250,
         )
-        self.ssh_key_type_menu.grid(row=13, column=1, columnspan=2, sticky="w", padx=15, pady=(5, 0))
+        self.ssh_key_type_menu.grid(row=3, column=1, sticky="w", padx=15, pady=(5, 0))
 
-        # Help text for SSH key types
-        help_text = (
-            "💡 Se elige automáticamente según el proveedor:\n"
-            "   • GitHub, GitLab, Bitbucket → Ed25519 (moderno y seguro)\n"
-            "   • Azure DevOps → RSA (por compatibilidad)\n"
-            "   Puedes cambiar manualmente si lo necesitas."
-        ) if self.lang == "es" else (
-            "💡 Automatically selected based on provider:\n"
-            "   • GitHub, GitLab, Bitbucket → Ed25519 (modern & secure)\n"
-            "   • Azure DevOps → RSA (for compatibility)\n"
-            "   You can change manually if needed."
-        )
         key_type_help = ctk.CTkLabel(
-            container,
-            text=help_text,
-            text_color=UI.MUTED,
-            font=ctk.CTkFont(size=UI.SIZE_HELP),
-            justify="left",
-            anchor="w"
+            adv,
+            text=self.tr("key_type_help"),
+            text_color=UI.MUTED, justify="left", anchor="w", wraplength=560, font=ctk.CTkFont(size=UI.SIZE_HELP),
         )
-        key_type_help.grid(row=14, column=0, columnspan=3, sticky="w", padx=15, pady=(2, 5))
+        key_type_help.grid(row=4, column=0, columnspan=2, sticky="w", padx=15, pady=(2, 5))
+
+        self._advanced_visible = True
+        self._set_advanced_visible(False, resize=False)
 
         # ACTION BUTTON
-        self.run_btn = ctk.CTkButton(container, text=self.tr("run_btn"), font=ctk.CTkFont(size=UI.SIZE_LG, weight="bold"), height=40, command=self.execute_automation)
-        self.run_btn.grid(row=15, column=0, columnspan=3, pady=(15, 10))
+        self.run_btn = ctk.CTkButton(container, text=self.tr("run_btn"), font=ctk.CTkFont(size=UI.SIZE_LG, weight="bold"), height=40, width=280, command=self.execute_automation)
+        self.run_btn.grid(row=13, column=0, columnspan=3, pady=(15, 10))
+
+        # Enter submits the form from any text field.
+        for entry in (self.path_entry, self.profile_id_entry, self.git_name_entry, self.git_email_entry,
+                      self.ssh_host_entry, self.ssh_real_host_entry):
+            entry.bind("<Return>", lambda _e: self.execute_automation())
 
         self.update_ssh_host_suggestion()
+
+    def _set_advanced_visible(self, visible, resize=True):
+        if visible == self._advanced_visible:
+            return
+        self._advanced_visible = visible
+        if visible:
+            self.advanced_frame.grid()
+        else:
+            self.advanced_frame.grid_remove()
+        self.advanced_btn.configure(text=self.tr("advanced_hide" if visible else "advanced_show"))
+        if resize:
+            self._size_window_to_content()
 
     def update_key_type_visibility(self):
         """Show/hide SSH key type selector based on 'gen_ssh' checkbox."""
@@ -1095,6 +1544,7 @@ class GitSSHAutomationApp(ctk.CTk):
             self.ssh_real_host_entry.configure(state="normal")
         else:
             self.ssh_real_host_entry.configure(placeholder_text=self.tr("self_hosted_placeholder"))
+            self._set_advanced_visible(True)
 
         # Auto-select recommended SSH key type for this provider
         recommended_key_type = self.PROVIDER_KEY_TYPES.get(choice, "ed25519")
@@ -1366,9 +1816,10 @@ class GitSSHAutomationApp(ctk.CTk):
             return segments[1]
         return segments[0]
 
-    def _set_clone_status(self, text, ok):
+    def _set_clone_status(self, text, ok, neutral=False):
         # Tuple colors so the status stays readable in both light and dark mode.
-        color = UI.SUCCESS if ok else UI.ERROR
+        # neutral: a hint for a form not filled in yet, not an error the user made.
+        color = UI.MUTED if neutral else UI.SUCCESS if ok else UI.ERROR
         self.clone_status_lbl.configure(text=text, text_color=color)
         self.clone_btn.configure(state="normal" if ok else "disabled")
 
@@ -1415,7 +1866,7 @@ class GitSSHAutomationApp(ctk.CTk):
             return
 
         if not url:
-            self._set_clone_status(self.tr("clone_status_no_url"), ok=False)
+            self._set_clone_status(self.tr("clone_status_no_url"), ok=False, neutral=True)
             return
 
         parsed = self.parse_ssh_clone_url(url)
@@ -1781,6 +2232,9 @@ class GitSSHAutomationApp(ctk.CTk):
         self.log_box.insert("end", f">> {text}\n")
         self.log_box.see("end")
         self.log_box.configure(state="disabled")
+        if not getattr(self, "_console_visible", True):
+            self._console_unread = getattr(self, "_console_unread", 0) + 1
+            self._update_console_toggle_text()
 
     def browse_folder(self):
         # Selects an EXISTING folder as-is (no subfolder appended later).
@@ -1868,6 +2322,7 @@ class GitSSHAutomationApp(ctk.CTk):
             self.tr("summary_ssh_alias", v=ssh_host),
             self.tr("summary_real_provider", v=real_host),
             self.tr("summary_gen_ssh", v=gen_ssh_text),
+            self.tr("summary_secret_scan"),
         ])
         summary_lbl = ctk.CTkLabel(frame, text=summary_text, justify="left", anchor="w", wraplength=420)
         summary_lbl.pack(anchor="w", pady=(0, 15))
@@ -1976,6 +2431,8 @@ class GitSSHAutomationApp(ctk.CTk):
             with open(sub_gitconfig, "w", encoding="utf-8", newline="") as f:
                 f.write(f"[user]\n\tname = {git_name}\n\temail = {git_email}\n")
             self.log(self.tr("log_gitconfig_written", path=sub_gitconfig))
+            self._enable_secret_scan(sub_gitconfig)  # mandatory for every new profile
+            self.log(self.tr("log_secret_scan_on"))
 
             # C. Register profile in main ~/.gitconfig using includeIf
             gitconfig_data = ""
@@ -2099,6 +2556,9 @@ class GitSSHAutomationApp(ctk.CTk):
                     info["name"] = m_name.group(1).strip()
                 if m_email:
                     info["email"] = m_email.group(1).strip()
+                m_hooks = re.search(r'hooksPath\s*=\s*(.+)', sub_data)
+                info["secret_scan"] = bool(m_hooks) and (
+                    m_hooks.group(1).strip().strip('"') == self._to_gitconfig_path(gitleaks_paths()["hooks"]))
 
         if os.path.exists(self.ssh_config_path):
             with open(self.ssh_config_path, "r", encoding="utf-8") as f:
@@ -2272,12 +2732,18 @@ class GitSSHAutomationApp(ctk.CTk):
         self.refresh_clone_profiles()
 
         if not profiles:
-            empty_lbl = ctk.CTkLabel(self.profiles_scroll, text=self.tr("list_empty"))
-            empty_lbl.pack(padx=10, pady=20)
+            empty_lbl = ctk.CTkLabel(self.profiles_scroll, text=self.tr("list_empty"), font=ctk.CTkFont(size=UI.SIZE_SECTION, weight="bold"))
+            empty_lbl.pack(padx=10, pady=(60, 6))
+            hint_lbl = ctk.CTkLabel(self.profiles_scroll, text=self.tr("list_empty_hint"), text_color=UI.MUTED, justify="center")
+            hint_lbl.pack(padx=10, pady=(0, 14))
+            create_btn = ctk.CTkButton(self.profiles_scroll, text=self.tr("list_empty_btn"), command=lambda: self.tabview.set(self.TAB_CREATE))
+            create_btn.pack()
             return
 
         for profile in profiles:
             self._create_profile_card(self.profiles_scroll, profile)
+        if hasattr(self, "log_box"):  # not while the window is still being built
+            self._render_notice()
 
     def _get_provider_emoji(self, real_host):
         """Get emoji for provider based on real_host."""
@@ -2355,6 +2821,20 @@ class GitSSHAutomationApp(ctk.CTk):
                 wraplength=400,
             )
             ssh_lbl.pack(anchor="w", padx=12, pady=(0, 6))
+
+        # Secret protection (gitleaks): always on; profiles from older versions get an "Enable" button.
+        scan_row = ctk.CTkFrame(card, fg_color="transparent")
+        scan_row.pack(fill="x", padx=12, pady=(0, 2))
+        scan_on = profile.get("secret_scan")
+        ctk.CTkLabel(
+            scan_row, text=self.tr("card_secret_scan_on" if scan_on else "card_secret_scan_missing"),
+            text_color=UI.SUCCESS if scan_on else UI.WARNING, font=ctk.CTkFont(size=UI.SIZE_HELP),
+        ).pack(side="left")
+        if not scan_on:
+            ctk.CTkButton(
+                scan_row, text=self.tr("card_secret_scan_enable"), width=80, height=22,
+                font=ctk.CTkFont(size=UI.SIZE_HELP), command=lambda p=profile: self.enable_secret_scan_for([p]),
+            ).pack(side="left", padx=(10, 0))
 
         # Action buttons
         button_frame = ctk.CTkFrame(card, fg_color="transparent")
@@ -2489,9 +2969,10 @@ class GitSSHAutomationApp(ctk.CTk):
         cancel_btn.grid(row=15, column=0, columnspan=2, pady=5)
 
     def save_profile_edit(self, profile, new_name, new_email, new_ssh_host, new_real_host):
-        # Update the sub-gitconfig (name/email); newline="" keeps plain LF endings
-        with open(profile["gitconfig_path"], "w", encoding="utf-8", newline="") as f:
-            f.write(f"[user]\n\tname = {new_name}\n\temail = {new_email}\n")
+        # Update only name/email in the sub-gitconfig; other keys (e.g. core.hooksPath for secret protection) stay.
+        for key, value in (("user.name", new_name), ("user.email", new_email)):
+            subprocess.run(["git", "config", "--file", profile["gitconfig_path"], key, value],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
         self.log(self.tr("log_edit_git_updated", id=profile['id'], path=profile['gitconfig_path']))
 
         # Update the SSH config block, if this profile has one
