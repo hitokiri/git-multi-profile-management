@@ -6,6 +6,9 @@ Desktop (GUI) tool for managing **multiple Git identities and SSH keys** on the 
 
 The interface is available in **Spanish and English**, switchable at any time from within the app itself.
 
+<p align="center"><img src="docs/images/en/demo.gif" width="520" alt="Walkthrough: create a profile, enable secret protection, clone a repo and switch to the dark theme"></p>
+<p align="center">▶ <a href="docs/images/en/demo.mp4">Watch the walkthrough video (MP4, 26 s)</a></p>
+
 ---
 
 ## Table of contents
@@ -25,7 +28,8 @@ The interface is available in **Spanish and English**, switchable at any time fr
    - [View and edit profiles](#2-view-and-edit-profiles)
    - [Delete a profile](#3-delete-a-profile)
    - [Clone a repository](#4-clone-a-repository)
-7. [Changing the interface language](#changing-the-interface-language)
+   - [Secret protection (gitleaks)](#5-secret-protection-gitleaks)
+7. [Changing the interface language and theme](#changing-the-interface-language-and-theme)
 8. [Where the app writes files](#where-the-app-writes-files)
 9. [FAQ / troubleshooting](#faq--troubleshooting)
 
@@ -56,9 +60,9 @@ There are two ways to get the app, depending on what you want to do:
 
 If you just want to **use the app**, you don't need to install Python or the source code: go to the repository's [**Releases**](../../releases) tab and download the file for your OS:
 
-- **Windows**: `GitMultiProfileSSH.exe` — double-click to open.
-- **macOS**: `GitMultiProfileSSH-macos.app.zip` — unzip and open the `.app` (Gatekeeper may block it the first time, see [per-OS notes](#building-a-linux-binary-compatible-with-older-distros-glibc) below).
-- **Linux**: `GitMultiProfileSSH` — make it executable (`chmod +x GitMultiProfileSSH`) and open it.
+- **Windows**: `GitMultiProfileSSH-<version>.exe` — double-click to open.
+- **macOS**: `GitMultiProfileSSH-<version>-macos.app.zip` — unzip and open the `.app` (Gatekeeper may block it the first time, see [per-OS notes](#building-a-linux-binary-compatible-with-older-distros-glibc) below).
+- **Linux**: `GitMultiProfileSSH-<version>.AppImage` — make it executable (`chmod +x GitMultiProfileSSH-*.AppImage`) and open it.
 
 These executables are built automatically on every release (see [Automatically building all three executables with GitHub Actions](#automatically-building-all-three-executables-with-github-actions)) — you don't need to build them yourself.
 
@@ -80,6 +84,10 @@ python3 git_complete_automator.py
 
 No extra configuration or special permissions required — it only reads/writes inside your home folder (`~/.gitconfig`, `~/.ssh/config`, etc.).
 
+> Careful when testing changes: running from source, the app uses your **real** configuration. Creating or deleting a profile really modifies `~/.gitconfig`, `~/.ssh/config` and your SSH keys.
+
+From source, the header shows the version from the repo's `VERSION` file.
+
 ## Building a standalone executable
 
 > This section is for people who want to build their own executables (e.g. to publish a new release or test local changes). If you just want to **use** the app, download the pre-built executable from [Releases](../../releases) instead — see the previous section.
@@ -93,9 +101,15 @@ python3 build.py
 
 This produces the executable in `dist/`:
 
-- **Linux**: `dist/GitMultiProfileSSH` (an ELF binary; mark it executable with `chmod +x` if needed).
-- **Windows**: `dist/GitMultiProfileSSH.exe` (running `build.py` on a real Windows machine — it works exactly as well as on Linux/macOS, it's the same Python script with nothing Wine-specific in it).
-- **macOS**: `dist/GitMultiProfileSSH-macos.app` (running `build.py` on a real Mac — nothing else needed, the same script already detects macOS and produces the correct `.app` bundle; PyInstaller always packages this way with `--windowed`, even combined with `--onefile`).
+- **Linux**: `dist/GitMultiProfileSSH-<version>.AppImage` (for now a plain ELF binary with an `.AppImage` extension, not a real AppImage; mark it executable with `chmod +x` if needed).
+- **Windows**: `dist/GitMultiProfileSSH-<version>.exe` (running `build.py` on a real Windows machine — it works exactly as well as on Linux/macOS, it's the same Python script with nothing Wine-specific in it).
+- **macOS**: `dist/GitMultiProfileSSH-<version>-macos.app` (running `build.py` on a real Mac — nothing else needed, the same script already detects macOS and produces the correct `.app` bundle; PyInstaller always packages this way with `--windowed`, even combined with `--onefile`).
+
+**Version and icon:**
+
+- The version comes from the git tag if `HEAD` is tagged (`v1.2.0` → `1.2.0`); otherwise `build.py` bumps the patch number in `VERSION` (so each local build gets a distinct version). Either way it's written to `VERSION` and bundled into the executable — that's what the app shows in its header and window title.
+- The icon lives in `assets/` (`icon.png` for the window, `icon.ico` for the `.exe`, `icon.icns` for the `.app`). To change the design, edit and run `assets/make_icon.py` (needs `pip install Pillow`, only for that; the generated files are committed).
+- The screenshots, GIF and video in this README (`docs/images/`) come from the real app with demo data: `xvfb-run -a -s "-screen 0 1600x1400x24" python3 docs/make_screenshots.py` (Linux, needs Xvfb and Pillow; ffmpeg for the MP4). It runs on a virtual display with a temporary HOME, so it never touches or shows your configuration. Re-run it whenever the UI changes.
 
 **Important:** PyInstaller does **not** cross-compile — the resulting executable only runs on the same operating system you built it on.
 
@@ -112,7 +126,7 @@ This produces the executable in `dist/`:
 
 - If Wine isn't installed, the script prints the exact install command for your distro and stops (it won't install anything on its own).
 - The first run downloads the official Windows Python installer (~25 MB, cached in `.build-cache/`) and installs it inside the prefix — this can take a few minutes. Subsequent runs reuse that same Python and only rebuild the executable.
-- The result is a real Windows `.exe` (verifiable with `file dist/GitMultiProfileSSH.exe`), ready to copy to a Windows machine.
+- The result is a real Windows `.exe` (verifiable with `file dist/GitMultiProfileSSH-<version>.exe`), ready to copy to a Windows machine.
 
 ### Building a Linux binary compatible with older distros (glibc)
 
@@ -126,13 +140,13 @@ PyInstaller links the binary against the glibc of the machine that runs the buil
 
 - If Docker isn't installed, the script prints the exact install command for your distro and stops.
 - The first run builds an image with Python 3.11 and the required system dependencies (cached by Docker, so later runs are much faster).
-- The result is the same `dist/GitMultiProfileSSH` as always, but linked against glibc 2.35 — it runs on Ubuntu 22.04 and any newer distro. You can verify this with `objdump -T dist/GitMultiProfileSSH | grep GLIBC_ | sort -V | tail -1`.
+- The result is the same `dist/GitMultiProfileSSH-<version>.AppImage` as always, but linked against glibc 2.35 — it runs on Ubuntu 22.04 and any newer distro. You can verify this with `objdump -T dist/GitMultiProfileSSH-<version>.AppImage | grep GLIBC_ | sort -V | tail -1`.
 
 Per-OS notes:
 
-- **macOS**: being an unsigned app, Gatekeeper will block the first run. Right-click the `.app` → "Open", or run `xattr -dr com.apple.quarantine dist/GitMultiProfileSSH-macos.app`.
+- **macOS**: being an unsigned app, Gatekeeper will block the first run. Right-click the `.app` → "Open", or run `xattr -dr com.apple.quarantine dist/GitMultiProfileSSH-<version>-macos.app`.
 - **Windows**: an unsigned `.exe` may trigger a SmartScreen warning ("More info" → "Run anyway" to bypass it).
-- **Linux**: if the file isn't executable, run `chmod +x dist/GitMultiProfileSSH`.
+- **Linux**: if the file isn't executable, run `chmod +x dist/GitMultiProfileSSH-<version>.AppImage`.
 
 ### Automatically building all three executables with GitHub Actions
 
@@ -209,12 +223,19 @@ The window has three tabs: **Create Profile**, **Configured Profiles**, and **Cl
 1. **Project Folder**: choose or create the folder where this profile (and the repos you clone with it) will live. It's the *final* folder — nothing gets appended to it automatically.
    - **Browse...**: select a folder that already exists.
    - **➕ New**: pick a parent folder and type the name of the new folder to create.
-2. **Profile ID**: the organization's name (see [Key concepts](#key-concepts)).
-3. **Developer Name** and **Email**: the data Git will use for commits made inside that folder.
-4. **SSH Host (alias)**: auto-suggested by combining the real provider and the profile ID (e.g. `github.com-acme`). You can edit it if you prefer.
-5. **Provider**: choose GitHub, GitLab, Bitbucket, Azure DevOps, or "Other (manual)" for self-hosted. This auto-fills the "Real Provider" field.
-6. **Automatically generate a new SSH key**: if left on, a new Ed25519 key is generated for this profile (or reused if one with that name already exists).
-7. Press **"🔥 SET UP EVERYTHING NOW"**.
+2. **Provider**: choose GitHub, GitLab, Bitbucket, Azure DevOps, or "Other (manual)" for self-hosted. It sets the real host, SSH alias and key type used below.
+3. **Profile ID**: the organization's name (see [Key concepts](#key-concepts)).
+4. **Developer Name** and **Email**: the data Git will use for commits made inside that folder.
+5. **▸ Advanced options** (collapsed by default; the suggested values fit most cases — they open by themselves if you pick "Other (manual)", since the host must be typed there):
+   - **SSH Host (alias)**: suggested by combining the real provider and the profile ID (e.g. `github.com-acme`). You can edit it.
+   - **Real Provider**: the real domain (`github.com`, `ssh.dev.azure.com`, your self-hosted domain...).
+   - **Automatically generate a new SSH key** and **Key type**: Ed25519 for GitHub/GitLab/Bitbucket, RSA for Azure DevOps (or reused if one with that name already exists).
+6. Press **"Create profile & configure"** (or Enter from any field).
+
+<p>
+  <img src="docs/images/en/create-profile.png" width="420" alt="Create Profile form">
+  <img src="docs/images/en/advanced-options.png" width="420" alt="Advanced options expanded">
+</p>
 
 This **doesn't save anything yet**: a confirmation window opens with a summary of the data. From there you can:
    - **Cancel** → nothing is written to disk, you go back to the form to fix things.
@@ -227,6 +248,8 @@ Once it's done, a window appears with:
 ### 2. View and edit profiles
 
 **"📋 Configured Profiles"** tab: lists every profile detected by reading `~/.gitconfig`, the `~/.gitconfig-<id>` files, and `~/.ssh/config`. Use **🔄 Refresh** if you made manual changes to those files.
+
+<img src="docs/images/en/profiles.png" width="480" alt="Profile list with secret protection status">
 
 Each profile has an **✏️ Edit** button that lets you change the name, email, SSH alias, and real provider. The profile ID and folder can't be edited here (if you need to change those, delete the profile and create a new one).
 
@@ -255,13 +278,43 @@ From that same edit dialog you can also **rotate the SSH key**: pick the type (`
    - If anything doesn't match, the "Clone" button stays disabled and the reason is explained.
 4. If everything matches, press **"📥 Clone Repository"**. The repo is cloned inside the profile's folder, and the URL is automatically rewritten to use the correct SSH alias — you don't need to run `git remote set-url` by hand.
 
-## Changing the interface language
+
+<img src="docs/images/en/clone.png" width="480" alt="Clone tab with a validated URL">
+
+### 5. Secret protection (gitleaks)
+
+The app protects your profiles' repos so **a secret never slips into a commit** (private keys, API tokens, passwords), using [gitleaks](https://github.com/gitleaks/gitleaks). There's nothing to install or configure:
+
+- **Automatic install and updates**: when the app opens, it downloads gitleaks from the official release (verifying its sha256) into its own data folder, and updates it only when a new version comes out. With no internet, it keeps using the installed version. The header shows the status (**🛡 gitleaks 8.x**), and a **notice bar under the header**, visible from every tab, tells you when it was installed or updated, if it couldn't be installed (with a **Retry** button) or if some profiles are unprotected (with **Enable for all**). Close it with ✕.
+- **100% local**: the scan runs on your machine over what you're committing; your code is never uploaded or checked against any service. The network is only used to download the gitleaks binary itself.
+- **Mandatory on every profile**: every new profile is created with protection included (it's not optional; the form says so with *🛡 Includes secret protection*). It covers every repo inside the profile's folder, including existing ones. Profiles created with older versions show *No secret protection (older profile)* with an **Enable** button, and the notice bar offers **Enable for all**. Once on, it can't be turned off from the app.
+- **If it finds a secret, the commit is blocked** and it shows the file and line (with the value hidden). Remove it from the commit; if it's a false positive, skip it with `git commit --no-verify`, or add its *fingerprint* to a `.gitleaksignore` at the repo root.
+- **It doesn't break your hooks**: each repo's own hooks (`.git/hooks`, e.g. git-lfs's) still run after the scan.
+
+The notice bar messages (installed, couldn't install, unprotected profiles):
+
+<img src="docs/images/en/notice-installed.png" width="600" alt="Notice: gitleaks installed"><br>
+<img src="docs/images/en/notice-error.png" width="600" alt="Notice: gitleaks could not be installed"><br>
+<img src="docs/images/en/notice-unprotected.png" width="600" alt="Notice: unprotected profiles">
+
+Limit: a repo that sets its own `core.hooksPath` in its local config (e.g. with husky) uses its hooks instead of the app's, and isn't protected.
+
+## Changing the interface language and theme
 
 There's an **ES / EN** selector in the top-right corner. When you switch it:
 
 - The whole interface is translated instantly.
 - Anything you've typed into the forms (profile being created, clone URL, etc.) **is preserved**.
 - The preference is saved to `~/.git_multiprofile_lang` and remembered the next time you open the app.
+
+Next to it is the **Light / Dark / Auto** theme selector (Auto follows the system theme on Windows and macOS; on Linux it shows light). It's saved to `~/.git_multiprofile_theme`.
+
+**Console**: the log at the bottom can be hidden with **▾ Hide console** for a more compact window. While hidden, the button counts new messages (**▸ Show console (2 new messages)**); anything important still shows up in the notice bar.
+
+<p>
+  <img src="docs/images/en/dark-theme.png" width="420" alt="Dark theme">
+  <img src="docs/images/en/console-hidden.png" width="420" alt="Hidden console with new-message counter">
+</p>
 
 ## Where the app writes files
 
@@ -270,10 +323,12 @@ The app only reads/writes these files inside your home folder — it never touch
 | File | What it holds |
 |---|---|
 | `~/.gitconfig` | `includeIf` blocks that redirect each profile's folder to its specific config. |
-| `~/.gitconfig-<id>` | Git name and email for profile `<id>`. |
+| `~/.gitconfig-<id>` | Git name and email for profile `<id>` (plus `core.hooksPath` if secret protection is on). |
 | `~/.ssh/config` | `Host <alias>` blocks with the real `HostName`, user, and key to use. |
 | `~/.ssh/id_rsa_<id>` and `.pub` | The SSH private/public key generated for profile `<id>`. |
 | `~/.git_multiprofile_lang` | Interface language (`es` or `en`). |
+| `~/.git_multiprofile_theme` | Interface theme (`Light`, `Dark` or `System`). |
+| App data folder: `~/.local/share/GitMultiProfileSSH/` (Linux), `~/Library/Application Support/GitMultiProfileSSH/` (macOS), `%LOCALAPPDATA%\GitMultiProfileSSH\` (Windows) | `gitleaks/`: the gitleaks binary, its version and the git hooks used by protected profiles. Safe to delete; the app reinstalls it on next launch. |
 
 ## FAQ / troubleshooting
 

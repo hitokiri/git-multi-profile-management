@@ -21,17 +21,17 @@ sin tener que reconstruir el contexto desde cero. Se actualiza en cada sesión.
 - [ ] **Fase 2 — Sidebar en vez de `CTkTabview`** (elimina el hack de API
   privada `tabview._segmented_button._buttons_dict` usado para deshabilitar
   la pestaña "Clonar" sin perfiles).
-- [ ] **Fase 3 — Validación inline por campo** + `CTkToolTip` + colapsar
+- [~] **Fase 3 — Validación inline por campo** *(sesión 3: "Avanzado" colapsado hecho; falta validación inline y tooltips)* + `CTkToolTip` + colapsar
   "Avanzado" (alias SSH, tipo de llave) en el formulario de creación.
-- [ ] **Fase 4 — Estados vacíos** (lista de perfiles vacía, pestaña Clonar
+- [~] **Fase 4 — Estados vacíos** *(sesión 3: lista vacía con CTA hecha; Clonar bloqueada aún sin explicación propia)* (lista de perfiles vacía, pestaña Clonar
   bloqueada sin perfiles — hoy no explican por qué).
 - [ ] **Fase 5 — Unificar feedback.** Hay ~21 `messagebox.*` nativos de Tk
   mezclados con 5 `CTkToplevel` propios; los nativos no siguen el tema ni el
   modo oscuro. Pasar a banners inline + `CTkMessagebox` (add-on de Akascape).
-- [ ] **Fase 6 — Tema.** JSON de tema propio (partiendo de CTkThemesPack o
+- [~] **Fase 6 — Tema.** *(Toggle Claro/Oscuro/Auto hecho en sesión 3; falta el JSON de tema propio.)* JSON de tema propio (partiendo de CTkThemesPack o
   CTkThemeMaker) + toggle Claro/Oscuro/Sistema en la cabecera. *(Siguiente
   paso pendiente de arrancar.)*
-- [ ] **Fase 7 — Pulido.** Iconos en vez de emoji (se ven mal en Linux),
+- [~] **Fase 7 — Pulido.** *(sesión 3: Enter envía el formulario; ícono de app/ventana)* Iconos en vez de emoji (se ven mal en Linux),
   orden de foco, atajos de teclado (Enter para enviar).
 
 Extra de alto valor, aún no agendado en ninguna fase: botón "Probar conexión"
@@ -139,6 +139,35 @@ Arreglado a mano en `venv/bin/{activate,activate.csh,activate.fish,pip,
 pip3,pip3.12,pyinstaller,pyi-*}` (sed reemplazando la ruta vieja por la
 actual) más `python3 -m venv --upgrade venv` para `pyvenv.cfg`. Verificado
 en un subshell limpio.
+
+### Sesión 3 (2026-11-17) — "más usable y bonita"
+
+- **Tema**: selector Claro / Oscuro / Auto en la cabecera, persistido en
+  `~/.git_multiprofile_theme` (la constante `THEME_FILE` ya existía sin usarse).
+- **Formulario Crear Perfil**: Proveedor va primero (es lo que define host
+  real, alias y tipo de llave); Host SSH, Proveedor Real, generar llave y tipo
+  de llave pasan a "▸ Opciones avanzadas" plegado (se abre solo con "Otro
+  (manual)" porque ahí el host es obligatorio). La ventana se re-mide con
+  `_size_window_to_content()` al plegar/desplegar — probado: 771px ↔ 954px,
+  estable también tras cambiar de idioma. Ayuda del ID de perfil acortada;
+  texto de tipo de llave pasado a i18n (`key_type_help`, se borraron las
+  claves muertas `ssh_key_type_help_es/_en`). Botón "Crear perfil y
+  configurar" en vez de "🔥 CONFIGURAR TODO AHORA". Enter envía.
+- **Lista vacía**: título + explicación + botón "Crear primer perfil".
+- **Clonar**: "Pega la URL SSH" con URL vacía ya no se pinta en rojo (era un
+  error sin que el usuario hiciera nada); ahora gris.
+- Consola 170 → 140px de alto.
+- Versión (`vX.Y.Z`) e ícono propio en cabecera/título/ventana.
+- Verificado en Xvfb aislado (HOME falso): capturas Claro/Oscuro × ES/EN ×
+  con/sin perfiles, y chequeo de comportamiento (estado tras cambiar idioma,
+  self-hosted abre avanzadas, tema persistido, Enter envía).
+
+### Sesión 4 (2026-11-17) — avisos visibles, consola plegable, manual con imágenes
+
+- **Barra de avisos** bajo la cabecera (`_pick_notice` / `_render_notice`), visible desde cualquier pestaña y cerrable con ✕: gitleaks no instalado (Reintentar), perfiles sin protección (Activar en todos), gitleaks instalado/actualizado. Pensada para reutilizarse con el aviso de nueva versión (auto-update).
+- **Consola plegable** (pedido explícito del usuario, distinto de la Fase 1 revertida: la ventana sigue sin ser redimensionable por el usuario). Con la consola oculta, el botón cuenta mensajes nuevos.
+- `_size_window_to_content()` fija el **ancho** en la primera medición y luego solo ajusta el alto: re-medir con la pestaña Perfiles abierta ensanchaba la ventana a 736px.
+- **Manual con imágenes**: `docs/make_screenshots.py` genera capturas y un GIF de recorrido (es/en) desde la app real en Xvfb con HOME de demo; embebidos en ambos README.
 
 ---
 
